@@ -99,7 +99,6 @@ jobs:
           make defconfig
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
           echo "$SIGN_KEY" | base64 -d > key-build
-          make package/index
           tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
       - name: Compress build logs
