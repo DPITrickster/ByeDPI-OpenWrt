@@ -67,16 +67,6 @@ jobs:
       options: --user root
     defaults: { run: { shell: bash } }
     steps:
-      - name: Cache feeds and downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/feeds' || '/builder/feeds' }}
-            ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/dl' || '/builder/dl' }}
-          key: ${{ runner.os }}-feeds-${{ matrix.arch }}-${{ matrix.branch }}
-          restore-keys: |
-            ${{ runner.os }}-feeds-${{ matrix.arch }}-
-    
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -95,17 +85,6 @@ jobs:
           sed "s|@VERSION@|${TAG#v}|" -i byedpi/Makefile
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Setup feeds.conf
-        working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
-        run: |
-          cat > feeds.conf <<EOF
-          src-git packages https://git.openwrt.org/feed/packages.git
-          src-git luci https://git.openwrt.org/feed/luci.git
-          src-git routing https://git.openwrt.org/feed/routing.git
-          src-git telephony https://git.openwrt.org/feed/telephony.git
-          src-link byedpi $GITHUB_WORKSPACE
-          EOF
-
       - name: Build package
         id: build
         working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
@@ -114,7 +93,7 @@ jobs:
           BRANCH: ${{ matrix.branch }}
           SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
-          ./scripts/feeds update -a
+          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
           ./scripts/feeds update byedpi
           ./scripts/feeds install -a -p byedpi
           make defconfig
@@ -129,7 +108,7 @@ jobs:
           BRANCH: ${{ matrix.branch }}
           LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
         run: |
-          [ -d "$LOGS_DIR" ] && tar -cJvf logs-$BRANCH-$ARCH.tar.xz $LOGS_DIR || echo "No logs found."
+          tar -cJvf logs-$BRANCH-$ARCH.tar.xz $LOGS_DIR
 
       - name: Upload packages
         if: steps.build.outcome == 'success'
