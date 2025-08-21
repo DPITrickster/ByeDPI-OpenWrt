@@ -1,3 +1,6 @@
+permissions:
+  contents: write
+
 name: build
 
 on:
@@ -80,12 +83,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: 'hufrea/byedpi'
-        run : |
-          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" http://api.github.com/repos/$REPO/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
+        run: |
+          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" https://api.github.com/repos/$REPO/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
+          echo "Latest upstream tag: $TAG"
+
+          if [ -f .last_release_tag ]; then
+            LAST=$(cat .last_release_tag)
+          else
+            LAST=""
+          fi
+          echo "Last processed tag: $LAST"
+
+          if [ "$TAG" = "$LAST" ]; then
+            echo "tag=SKIP" >> $GITHUB_OUTPUT
+            echo "No new release. Skipping build."
+            exit 0
+          fi
+          
           sed "s|@VERSION@|${TAG#v}|" -i byedpi/Makefile
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-
+          
       - name: Build package
+        if: ${{ steps.prepare.outputs.tag != 'SKIP' }}
         id: build
         working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
         env:
@@ -102,16 +121,20 @@ jobs:
           tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
       - name: Compress build logs
-        if: always()
+        if: ${{ always() }}
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
           LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
         run: |
-          tar -cJvf logs-$BRANCH-$ARCH.tar.xz $LOGS_DIR
+          if [ -d "$LOGS_DIR" ]; then
+            tar -cJvf logs-$BRANCH-$ARCH.tar.xz "$LOGS_DIR"
+          else
+            echo "No logs dir at $LOGS_DIR — skipping compression."
+          fi
 
       - name: Upload packages
-        if: steps.build.outcome == 'success'
+        if: ${{steps.build.outcome == 'success' && steps.prepare.outputs.tag != 'SKIP'}}
         uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
@@ -119,14 +142,16 @@ jobs:
           if-no-files-found: error
 
       - name: Upload build logs
-        if: always()
+        if: ${{ always() && steps.prepare.outputs.tag != 'SKIP' }}
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.branch }}-${{ matrix.arch }}
           path: logs-*.tar.xz
+          if-no-files-found: error
 
   gh-pages:
     needs: build
+    if: ${{ needs.build.outputs.tag != 'SKIP' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -153,6 +178,21 @@ jobs:
           user_email: 'github-actions[bot]@users.noreply.github.com'
           full_commit_message: 'ByeDPI ${{ needs.build.outputs.tag }}'
           force_orphan: true
+
+      - name: Checkout repo to update last tag
+        if: ${{ success() }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Update .last_release_tag
+        if: ${{ success() }}
+        run: |
+          echo "${{ needs.build.outputs.tag }}" > .last_release_tag
+          git add .last_release_tag
+          git commit -m "Update last_release_tag to ${{ needs.build.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
 
   release:
     needs: [ build, gh-pages ]
