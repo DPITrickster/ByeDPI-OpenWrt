@@ -9,10 +9,44 @@ on:
     - cron: '0 0 */14 * *'
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.prepare.outputs.tag }}
+      tag: ${{ steps.get_tag.outputs.tag }}
+    steps:
+      - name: Checkout repository (to read .last_release_tag)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get upstream latest release tag
+        id: get_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: 'hufrea/byedpi'
+        run: |
+          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
+          echo "Latest upstream tag: $TAG"
+
+          if [ -f .last_release_tag ]; then
+            LAST=$(cat .last_release_tag)
+          else
+            LAST=""
+          fi
+          echo "Last processed tag: $LAST"
+
+          if [ "$TAG" = "$LAST" ]; then
+            echo "tag=SKIP" >> $GITHUB_OUTPUT
+            echo "No new release. Skipping build."
+            exit 0
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  build:
+    needs: check
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +101,8 @@ jobs:
       image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
       options: --user root
     defaults: { run: { shell: bash } }
+    env:
+      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,34 +112,13 @@ jobs:
         working-directory: /builder
         run: HOME=/builder ./setup.sh
 
-      - name: Prepare build
-        id: prepare
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: 'hufrea/byedpi'
+      - name: Prepare package (set version)
         run: |
-          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
-          echo "Latest upstream tag: $TAG"
+          # Используем UPSTREAM_TAG, полученный на этапе check
+          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
 
-          if [ -f .last_release_tag ]; then
-            LAST=$(cat .last_release_tag)
-          else
-            LAST=""
-          fi
-          echo "Last processed tag: $LAST"
-
-          if [ "$TAG" = "$LAST" ]; then
-            echo "tag=SKIP" >> $GITHUB_OUTPUT
-            echo "No new release. Skipping build."
-            exit 0
-          fi
-          
-          sed "s|@VERSION@|${TAG#v}|" -i byedpi/Makefile
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - name: Build package
-        if: ${{ steps.prepare.outputs.tag != 'SKIP' }}
-        id: build
+      - name: Compile package
+        id: compile
         working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
         env:
           ARCH: ${{ matrix.arch }}
@@ -132,7 +147,7 @@ jobs:
           fi
 
       - name: Upload packages
-        if: ${{ steps.prepare.outputs.tag != 'SKIP' && steps.build.outcome == 'success' }}
+        if: ${{ steps.compile.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
@@ -140,7 +155,6 @@ jobs:
           if-no-files-found: error
 
       - name: Upload build logs
-        if: ${{ steps.prepare.outputs.tag != 'SKIP' }}
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.branch }}-${{ matrix.arch }}
@@ -148,8 +162,8 @@ jobs:
           if-no-files-found: ignore
 
   gh-pages:
-    needs: build
-    if: ${{ needs.build.outputs.tag != 'SKIP' }}
+    needs: [check, build]
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -174,7 +188,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           user_name: 'github-actions[bot]'
           user_email: 'github-actions[bot]@users.noreply.github.com'
-          full_commit_message: 'ByeDPI ${{ needs.build.outputs.tag }}'
+          full_commit_message: 'ByeDPI ${{ needs.check.outputs.tag }}'
           force_orphan: true
 
       - name: Checkout repo to update last tag
@@ -189,14 +203,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "${{ needs.build.outputs.tag }}" > .last_release_tag
+          echo "${{ needs.check.outputs.tag }}" > .last_release_tag
           git add .last_release_tag
-          git commit -m "Update last_release_tag to ${{ needs.build.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git commit -m "Update last_release_tag to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref_name }}
 
   release:
-    needs: [ build, gh-pages ]
-    if: ${{ needs.build.outputs.tag != 'SKIP' }}
+    needs: [check, build, gh-pages]
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -225,11 +239,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
-          tag_name: ${{ needs.build.outputs.tag }}-${{ matrix.branch }}
-          name: ${{ needs.build.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+          tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
+          name: ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
           target_commitish: gh-pages
           body: |
-            ### ByeDPI ${{ needs.build.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+            ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
 
             -----
             Check the package architecture of your device using the command:
