@@ -6,7 +6,7 @@ name: build
 on:
   workflow_dispatch:
   schedule:
-    - cron:  '0 0 */14 * *'
+    - cron: '0 0 */14 * *'
 
 jobs:
   build:
@@ -63,8 +63,6 @@ jobs:
         include:
           - branch: openwrt-24.10
             arch: aarch64_cortex-a76
-          # - branch: SNAPSHOT
-          #   arch: x86_64
     container:
       image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
       options: --user root
@@ -74,7 +72,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup SDK
-        if: matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'SNAPSHOT'
+        if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'SNAPSHOT' }}
         working-directory: /builder
         run: HOME=/builder ./setup.sh
 
@@ -84,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: 'hufrea/byedpi'
         run: |
-          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" https://api.github.com/repos/$REPO/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
+          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
           echo "Latest upstream tag: $TAG"
 
           if [ -f .last_release_tag ]; then
@@ -102,7 +100,7 @@ jobs:
           
           sed "s|@VERSION@|${TAG#v}|" -i byedpi/Makefile
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          
+
       - name: Build package
         if: ${{ steps.prepare.outputs.tag != 'SKIP' }}
         id: build
@@ -134,7 +132,7 @@ jobs:
           fi
 
       - name: Upload packages
-        if: ${{steps.build.outcome == 'success' && steps.prepare.outputs.tag != 'SKIP'}}
+        if: ${{ steps.prepare.outputs.tag != 'SKIP' && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
@@ -142,12 +140,12 @@ jobs:
           if-no-files-found: error
 
       - name: Upload build logs
-        if: ${{ always() && steps.prepare.outputs.tag != 'SKIP' }}
+        if: ${{ steps.prepare.outputs.tag != 'SKIP' }}
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.branch }}-${{ matrix.arch }}
           path: logs-*.tar.xz
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   gh-pages:
     needs: build
@@ -163,7 +161,7 @@ jobs:
 
       - name: Prepare files
         run: |
-          mkdir public
+          mkdir -p public
           find . -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
           cat <<EOF >> public/public.key
           untrusted comment: ByeDPI OpenWrt repo
@@ -189,6 +187,8 @@ jobs:
       - name: Update .last_release_tag
         if: ${{ success() }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "${{ needs.build.outputs.tag }}" > .last_release_tag
           git add .last_release_tag
           git commit -m "Update last_release_tag to ${{ needs.build.outputs.tag }} [skip ci]" || echo "No changes to commit"
@@ -196,6 +196,7 @@ jobs:
 
   release:
     needs: [ build, gh-pages ]
+    if: ${{ needs.build.outputs.tag != 'SKIP' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
