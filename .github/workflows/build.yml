@@ -128,7 +128,7 @@ jobs:
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
 
       - name: Cache SDK downloads
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4
+        uses: actions/cache@v4
         with:
           path: |
             ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/dl' || '/builder/dl' }}
@@ -213,12 +213,10 @@ jobs:
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
           pattern: ipk-*
-          # No path parameter - extracts to current directory
 
       - name: Prepare files
         run: |
           mkdir -p public
-          # Artifacts are in subdirectories like ipk-openwrt-22.03-x86_64/
           find . -type f -name '*.tar.gz' -exec tar -C ./public -xzf {} \;
           
           cat <<EOF > public/public.key
@@ -274,14 +272,12 @@ jobs:
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
           pattern: ipk-openwrt-${{ matrix.branch }}*
-          # No path parameter
 
       - name: Prepare files
         env:
           BRANCH: ${{ matrix.branch }}
         run: |
           mkdir -p release
-          # Artifacts are in subdirectories
           find . -type f -name '*.tar.gz' -exec tar -C ./release -xzf {} --wildcards '*.ipk' \;
 
       - name: Upload release assets
