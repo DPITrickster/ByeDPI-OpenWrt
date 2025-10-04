@@ -34,7 +34,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: 'hufrea/byedpi'
         run: |
-          # Use manual input if provided, otherwise fetch latest
           if [ -n "${{ inputs.upstream_tag }}" ]; then
             TAG="${{ inputs.upstream_tag }}"
             echo "Using manually specified tag: $TAG"
@@ -166,7 +165,7 @@ jobs:
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
           
-          # Create compressed tar archive
+          # Create compressed archive
           tar -C ./bin/packages/*/byedpi -czf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar.gz \
             --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" \
             --show-transformed-names .
@@ -181,7 +180,7 @@ jobs:
           if [ -d "$LOGS_DIR" ]; then
             tar -cJf logs-$BRANCH-$ARCH.tar.xz -C "$LOGS_DIR" .
           else
-            echo "No logs directory at $LOGS_DIR — skipping compression."
+            echo "No logs directory at $LOGS_DIR — skipping."
           fi
 
       - name: Upload packages
@@ -214,12 +213,13 @@ jobs:
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
           pattern: ipk-*
-          path: artifacts
+          # No path parameter - extracts to current directory
 
       - name: Prepare files
         run: |
           mkdir -p public
-          find artifacts -name 'ipk-*.tar.gz' -exec tar -C ./public -xzf {} \;
+          # Artifacts are in subdirectories like ipk-openwrt-22.03-x86_64/
+          find . -type f -name '*.tar.gz' -exec tar -C ./public -xzf {} \;
           
           cat <<EOF > public/public.key
           untrusted comment: ByeDPI OpenWrt repo
@@ -273,15 +273,16 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
-          pattern: ipk-openwrt-${{ matrix.branch }}-*
-          path: artifacts
+          pattern: ipk-openwrt-${{ matrix.branch }}*
+          # No path parameter
 
       - name: Prepare files
         env:
           BRANCH: ${{ matrix.branch }}
         run: |
           mkdir -p release
-          find artifacts -name "ipk-openwrt-$BRANCH-*.tar.gz" -exec tar -C ./release -xzf {} --wildcards '*.ipk' \;
+          # Artifacts are in subdirectories
+          find . -type f -name '*.tar.gz' -exec tar -C ./release -xzf {} --wildcards '*.ipk' \;
 
       - name: Upload release assets
         uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2
