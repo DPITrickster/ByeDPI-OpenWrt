@@ -4,15 +4,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-on:
-  workflow_dispatch:
-    inputs:
-      upstream_tag:
-        description: 'Upstream tag to build (leave empty for latest)'
-        required: false
-        type: string
-  schedule:
-    - cron: '0 0 */14 * *'
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       upstream_tag:
+#         description: 'Upstream tag to build (leave empty for latest)'
+#         required: false
+#         type: string
+#   schedule:
+#     - cron: '0 0 */14 * *'
 
 jobs:
   check:
