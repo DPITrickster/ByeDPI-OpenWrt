@@ -154,7 +154,9 @@ jobs:
           if [ -n "$SIGN_KEY" ]; then
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
-          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar --transform "s|^\./|${{ env.ARCH_TAG }}/|" --show-transformed-names .
+          mkdir -p /tmp/apk-collection
+          find ./bin -name "byedpi*.apk" -exec cp --parents {} /tmp/apk-collection \;
+          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar .
 
       - name: Upload APK packages
         if: steps.compile.outcome == 'success'
