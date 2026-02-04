@@ -155,18 +155,15 @@ jobs:
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
           
-          # Собираем все найденные APK файлы
           mkdir -p /tmp/apk-collection/${{ env.ARCH_TAG }}
           find ./bin -name "byedpi*.apk" -type f -exec cp {} /tmp/apk-collection/${{ env.ARCH_TAG }} \;
           
-          # Проверяем, что файлы найдены
           if [ -z "$(ls -A /tmp/apk-collection/${{ env.ARCH_TAG }})" ]; then
             echo "ERROR: No APK files found for ${{ env.ARCH_TAG }}"
             find ./bin -type f -name "*.apk" | head -5
             exit 1
           fi
           
-          # Создаем архив с плоской структурой
           tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar ${{ env.ARCH_TAG }}
 
       - name: Upload APK packages
@@ -207,7 +204,6 @@ jobs:
           RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
           EOF
           
-          # Генерация индексов для opkg
           find ./public -mindepth 1 -type d | while read dir; do
             if [ -n "$(find "$dir" -name '*.apk' -print -quit)" ]; then
               (cd "$dir" && opkg-make-index . > Packages 2>/dev/null || true)
@@ -268,44 +264,48 @@ jobs:
           path: ./packages
 
       - name: Extract and rename APK files
+        id: extract
         run: |
-          # Создаем директорию для сборки
           mkdir -p ./release_files
           
-          # Убираем 'v' из версии
           VERSION="${UPSTREAM_VERSION#v}"
           
-          # Обрабатываем каждый архив
           for tar_file in ./packages/apk-${{ matrix.sdk_version }}-*.tar; do
             if [ ! -f "$tar_file" ]; then
               continue
             fi
             
-            # Извлекаем архитектуру из имени файла
             filename=$(basename "$tar_file" .tar)
             arch=$(echo "$filename" | sed "s/apk-${{ matrix.sdk_version }}-//")
             
-            # Временно извлекаем файлы
-            mkdir -p /tmp/extract
-            tar -xf "$tar_file" -C /tmp/extract
+            TEMP_DIR=$(mktemp -d)
             
-            # Находим и переименовываем APK файл
-            find /tmp/extract -name "byedpi*.apk" -type f | while read apk_file; do
+            tar -xf "$tar_file" -C "$TEMP_DIR"
+            
+            find "$TEMP_DIR" -name "byedpi*.apk" -type f | while read apk_file; do
               base_name=$(basename "$apk_file")
-              new_name="${base_name%.apk}-${arch}.apk"
+              file_version=$(echo "$base_name" | grep -oP 'byedpi-\K[^-]+')
+              new_name="byedpi-${file_version}-${arch}.apk"
               cp "$apk_file" "./release_files/$new_name"
               echo "Renamed: $base_name -> $new_name"
             done
             
-            # Очищаем временную директорию
-            rm -rf /tmp/extract
+            rm -rf "$TEMP_DIR"
           done
           
-          # Проверяем, что файлы созданы
           echo "Generated files:"
-          ls -la ./release_files/
+          ls -la ./release_files/ 2>/dev/null || echo "No files generated"
+          
+          if ls ./release_files/*.apk 1> /dev/null 2>&1; then
+            echo "has_files=true" >> $GITHUB_OUTPUT
+            echo "Files found, will create release"
+          else
+            echo "has_files=false" >> $GITHUB_OUTPUT
+            echo "No files found, skipping release"
+          fi
 
       - name: Create Release
+        if: steps.extract.outputs.has_files == 'true'
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
