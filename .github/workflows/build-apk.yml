@@ -166,6 +166,36 @@ jobs:
           
           tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar ${{ env.ARCH_TAG }}
 
+      - name: Debug APK packaging
+        if: steps.compile.outcome == 'success'
+        run: |
+          echo "=== APK PACKAGING DEBUG INFO ==="
+          echo "Architecture: ${{ env.ARCH_TAG }}"
+          echo "SDK version: ${{ env.SDK_VERSION }}"
+          echo "Workspace path: ${{ env.WORKSPACE_PATH }}"
+          echo ""
+          echo "1. Contents of /tmp/apk-collection/${{ env.ARCH_TAG }}:"
+          ls -la /tmp/apk-collection/${{ env.ARCH_TAG }}/
+          echo ""
+          echo "2. APK file details:"
+          for apk in /tmp/apk-collection/${{ env.ARCH_TAG }}/*.apk; do
+            if [ -f "$apk" ]; then
+              echo "  - File: $(basename $apk)"
+              echo "    Size: $(stat -c%s $apk) bytes"
+              # Extract version from filename if possible
+              if [[ $(basename $apk) =~ byedpi-([0-9.]+) ]]; then
+                echo "    Version in filename: ${BASH_REMATCH[1]}"
+              fi
+            fi
+          done
+          echo ""
+          echo "3. Tar archive structure:"
+          tar -tvf apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar
+          echo ""
+          echo "4. Generated tar file:"
+          ls -la apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar
+          echo "================================"
+
       - name: Upload APK packages
         if: steps.compile.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -263,46 +293,97 @@ jobs:
           pattern: apk-${{ matrix.sdk_version }}-*
           path: ./packages
 
+      - name: Debug downloaded artifacts
+        run: |
+          echo "=== DOWNLOADED ARTIFACTS DEBUG ==="
+          echo "Looking for tar files with pattern: apk-${{ matrix.sdk_version }}-*"
+          find ./packages -name "*.tar" -type f | while read tar_file; do
+            echo "Found: $tar_file"
+            echo "File size: $(stat -c%s "$tar_file") bytes"
+            echo "Tar contents:"
+            tar -tf "$tar_file" 2>/dev/null | head -5 || echo "Failed to list contents"
+            echo ""
+          done
+          echo "================================"
+
       - name: Extract and rename APK files
         id: extract
         run: |
+          echo "=== APK EXTRACTION ==="
+          echo "SDK version: ${{ matrix.sdk_version }}"
+          echo "Upstream version: $UPSTREAM_VERSION"
+          
           mkdir -p ./release_files
           
-          VERSION="${UPSTREAM_VERSION#v}"
+          # Clean version (remove 'v' prefix if present)
+          CLEAN_VERSION="${UPSTREAM_VERSION#v}"
           
+          # Process each tar file
           for tar_file in ./packages/apk-${{ matrix.sdk_version }}-*.tar; do
             if [ ! -f "$tar_file" ]; then
+              echo "No tar file found: $tar_file"
               continue
             fi
             
+            echo "Processing: $(basename $tar_file)"
+            
+            # Extract architecture from filename
             filename=$(basename "$tar_file" .tar)
             arch=$(echo "$filename" | sed "s/apk-${{ matrix.sdk_version }}-//")
+            echo "  Architecture: $arch"
             
+            # Extract tar file to temporary directory
             TEMP_DIR=$(mktemp -d)
-            
+            echo "  Extracting to: $TEMP_DIR"
             tar -xf "$tar_file" -C "$TEMP_DIR"
             
-            find "$TEMP_DIR" -name "byedpi*.apk" -type f | while read apk_file; do
-              base_name=$(basename "$apk_file")
-              file_version=$(echo "$base_name" | grep -oP 'byedpi-\K[^-]+')
-              new_name="byedpi-${file_version}-${arch}.apk"
+            # Find APK files in the extracted directory
+            echo "  Looking for APK files..."
+            find "$TEMP_DIR" -type f -name "*.apk" | while read apk_file; do
+              echo "    Found: $apk_file"
+              
+              # Get original filename
+              orig_name=$(basename "$apk_file")
+              
+              # Check if filename already contains architecture
+              if [[ "$orig_name" =~ -${arch}\.apk$ ]]; then
+                # File already has architecture in name
+                new_name="$orig_name"
+                echo "    Already has architecture: $new_name"
+              else
+                # Extract version from original filename
+                if [[ "$orig_name" =~ byedpi-([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+                  file_version="${BASH_REMATCH[1]}"
+                else
+                  file_version="$CLEAN_VERSION"
+                fi
+                
+                # Create new name with architecture
+                new_name="byedpi-${file_version}-${arch}.apk"
+                echo "    Renaming to: $new_name"
+              fi
+              
+              # Copy to release_files directory
               cp "$apk_file" "./release_files/$new_name"
-              echo "Renamed: $base_name -> $new_name"
             done
             
+            # Clean up
             rm -rf "$TEMP_DIR"
           done
           
-          echo "Generated files:"
-          ls -la ./release_files/ 2>/dev/null || echo "No files generated"
-          
-          if ls ./release_files/*.apk 1> /dev/null 2>&1; then
+          echo ""
+          echo "=== FINAL RELEASE FILES ==="
+          if [ -n "$(ls -A ./release_files 2>/dev/null)" ]; then
+            ls -la ./release_files/
             echo "has_files=true" >> $GITHUB_OUTPUT
-            echo "Files found, will create release"
+            echo "Total files: $(ls -1 ./release_files/*.apk 2>/dev/null | wc -l)"
           else
+            echo "WARNING: No APK files found in ./release_files/"
+            echo "Listing packages directory:"
+            find ./packages -type f -name "*.tar" | head -5
             echo "has_files=false" >> $GITHUB_OUTPUT
-            echo "No files found, skipping release"
           fi
+          echo "=========================="
 
       - name: Create Release
         if: steps.extract.outputs.has_files == 'true'
@@ -315,10 +396,14 @@ jobs:
           body: |
             ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt 25.12 ${{ matrix.sdk_version }}
 
-            Check package architecture:
+            **Package architecture:** `${{ matrix.sdk_version }}`
+
+            Check your device architecture:
             ```bash
             awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
+
+            **Note:** Make sure to install the correct architecture package for your device.
           draft: false
           prerelease: true
           files: ./release_files/*.apk
