@@ -10,7 +10,7 @@ env:
   REPO_NAME: byedpi
   REPO_LNK: hufrea/byedpi
   UPSTREAM_REPO: 'hufrea/byedpi'
-  PKGTYPE: apk  # Только APK формат для 25.12+
+  PKGTYPE: apk  # APK 25.12+
   FRIENDLY_NAME: openwrt-25.12
 
 jobs:
@@ -93,6 +93,7 @@ jobs:
           echo "SDKDIR=/builder" >> $GITHUB_ENV
           echo "ARCH_TAG=${{ matrix.arch }}" >> $GITHUB_ENV
           echo "SDK_VERSION=${{ matrix.sdk_version }}" >> $GITHUB_ENV
+          echo "WORKSPACE_PATH=/__w/ByeDPI-OpenWrt/ByeDPI-OpenWrt" >> $GITHUB_ENV
           echo "Building for: ${{ matrix.arch }} with SDK ${{ matrix.sdk_version }}"
 
       - name: Fix SDK paths (from original workflow)
@@ -104,7 +105,6 @@ jobs:
       - name: Setup OpenWrt SDK (from original workflow)
         working-directory: ${{ env.SDKDIR }}
         run: |
-          # Исправлено: заменена конструкция <(...) на pipe для совместимости с sh
           wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc' | gpg --verbose --import
           sed -i 's/gpg --/#gpg --/g' setup.sh
           sed -r -i 's/^rm.+//' setup.sh
@@ -119,7 +119,7 @@ jobs:
           echo "Package version: $VERSION"
 
       - name: Prepare package
-        working-directory: ${{ github.workspace }}
+        working-directory: ${{ env.WORKSPACE_PATH }}
         run: |
           sed "s|@VERSION@|${{ env.UPSTREAM_VERSION }}|" -i byedpi/Makefile
           
@@ -149,16 +149,16 @@ jobs:
             echo "APK packages signed"
           fi
           
-          find ./bin/packages -name "byedpi*.apk" -exec cp {} ${{ github.workspace }} \;
+          find ./bin/packages -name "byedpi*.apk" -exec cp {} ${{ env.WORKSPACE_PATH }} \;
 
       - name: Prepare artifacts
         if: steps.compile.outcome == 'success'
-        working-directory: ${{ github.workspace }}
+        working-directory: ${{ env.WORKSPACE_PATH }}
         run: |
-          OUTPUT_DIR="${{ github.workspace }}/output/${{ env.FRIENDLY_NAME }}/${{ env.SDK_VERSION }}/${{ env.ARCH_TAG }}"
+          OUTPUT_DIR="output/${{ env.FRIENDLY_NAME }}/${{ env.SDK_VERSION }}/${{ env.ARCH_TAG }}"
           mkdir -p "$OUTPUT_DIR"
           
-          mv *.apk "$OUTPUT_DIR/" 2>/dev/null || echo "No APK packages found"
+          find . -maxdepth 1 -name "*.apk" -exec mv {} "$OUTPUT_DIR/" \; 2>/dev/null || echo "No APK packages found"
           
           echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_ENV
           echo "Artifacts prepared in: $OUTPUT_DIR"
@@ -168,7 +168,7 @@ jobs:
         run: |
           LOGS_DIR="${{ env.SDKDIR }}/logs"
           if [ -d "$LOGS_DIR" ]; then
-            tar -cJvf ${{ github.workspace }}/logs-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar.xz -C "${{ env.SDKDIR }}" logs/
+            tar -cJvf ${{ env.WORKSPACE_PATH }}/logs-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar.xz -C "${{ env.SDKDIR }}" logs/
           else
             echo "No logs directory found"
           fi
@@ -178,7 +178,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}
-          path: ${{ env.OUTPUT_DIR }}
+          path: ${{ env.WORKSPACE_PATH }}/output/${{ env.FRIENDLY_NAME }}/${{ env.SDK_VERSION }}/${{ env.ARCH_TAG }}
           if-no-files-found: error
 
       - name: Upload build logs
@@ -186,7 +186,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}
-          path: ${{ github.workspace }}/logs-*.tar.xz
+          path: ${{ env.WORKSPACE_PATH }}/logs-*.tar.xz
           if-no-files-found: ignore
 
   deploy:
