@@ -27,7 +27,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Используем GitHub CLI для получения тега
           TAG=$(gh api repos/${{ env.UPSTREAM_REPO }}/releases/latest --jq '.tag_name')
           echo "Latest upstream tag: $TAG"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
@@ -72,11 +71,9 @@ jobs:
           - riscv64_generic
           - x86_64
         exclude:
-          # Исключения из оригинального workflow для APK веток
           - arch: arm_cortex-a9_vfpv3-d16
           - arch: mips_4kec
         include:
-          # Обязательные архитектуры (из оригинального workflow)
           - arch: aarch64_cortex-a53
           - arch: x86_64
 
@@ -105,11 +102,8 @@ jobs:
       - name: Setup OpenWrt SDK (from original workflow)
         working-directory: ${{ env.SDKDIR }}
         run: |
-          # Импортируем GPG ключ OpenWrt
           gpg --verbose --import <(wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc')
-          # Отключаем проверку подписей (упрощаем)
           sed -i 's/gpg --/#gpg --/g' setup.sh
-          # Отключаем очистку ключей
           sed -r -i 's/^rm.+//' setup.sh
           ./setup.sh
 
@@ -124,10 +118,8 @@ jobs:
       - name: Prepare package
         working-directory: ${{ github.workspace }}
         run: |
-          # Устанавливаем версию в Makefile
           sed "s|@VERSION@|${{ env.UPSTREAM_VERSION }}|" -i byedpi/Makefile
           
-          # Копируем пакет в SDK (как в оригинальном workflow)
           mkdir -p ${{ env.SDKDIR }}/package/${{ env.REPO_NAME }}
           cp -r byedpi ${{ env.SDKDIR }}/package/
 
@@ -137,41 +129,32 @@ jobs:
         env:
           SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
-          # Настраиваем feeds (упрощенная версия из оригинального workflow)
           echo "src-link ${{ env.REPO_NAME }} ${{ env.SDKDIR }}/package/${{ env.REPO_NAME }}" >> feeds.conf
           
-          # Обновляем и устанавливаем feeds
           ./scripts/feeds update ${{ env.REPO_NAME }}
           ./scripts/feeds install -a -p ${{ env.REPO_NAME }}
           
-          # Конфигурируем
           make defconfig
           
-          # Отключаем минификацию JS/CSS (как в оригинальном workflow)
           sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config 2>/dev/null || true
           sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config 2>/dev/null || true
           
-          # Собираем пакет
           make package/${{ env.REPO_NAME }}/compile V=s -j$(nproc) BUILD_LOG=1
           
-          # Подписываем пакеты, если есть ключ
           if [ -n "$SIGN_KEY" ]; then
             echo "$SIGN_KEY" | base64 -d > key-build
             echo "APK packages signed"
           fi
           
-          # Копируем собранные пакеты
           find ./bin/packages -name "byedpi*.apk" -exec cp {} ${{ github.workspace }} \;
 
       - name: Prepare artifacts
         if: steps.compile.outcome == 'success'
         working-directory: ${{ github.workspace }}
         run: |
-          # Создаем структуру каталогов для артефактов
           OUTPUT_DIR="${{ github.workspace }}/output/${{ env.FRIENDLY_NAME }}/${{ env.SDK_VERSION }}/${{ env.ARCH_TAG }}"
           mkdir -p "$OUTPUT_DIR"
           
-          # Перемещаем APK пакеты
           mv *.apk "$OUTPUT_DIR/" 2>/dev/null || echo "No APK packages found"
           
           echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_ENV
@@ -218,15 +201,11 @@ jobs:
 
       - name: Prepare repository structure
         run: |
-          # Создаем структуру репозитория APK пакетов
           mkdir -p public
           
-          # Копируем все APK пакеты с сохранением структуры
           find ./artifacts/apk -type f -name "*.apk" | while read apk; do
-            # Извлекаем путь: artifacts/apk/openwrt-25.12/v25.12.0-rc2/aarch64_cortex-a53/
             rel_path="${apk#./artifacts/apk/}"
             
-            # Парсим путь: openwrt-25.12/v25.12.0-rc2/aarch64_cortex-a53/
             friendly_name=$(echo "$rel_path" | cut -d'/' -f1)
             sdk_version=$(echo "$rel_path" | cut -d'/' -f2)
             arch=$(echo "$rel_path" | cut -d'/' -f3)
@@ -237,7 +216,6 @@ jobs:
             echo "Copied $(basename "$apk") to $target_dir/"
           done
           
-          # Создаем файл с ключом репозитория
           cat > public/public.key << 'EOF'
           untrusted comment: ByeDPI OpenWrt repo
           RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
@@ -245,15 +223,12 @@ jobs:
 
       - name: Generate Packages index for APK repository
         run: |
-          # Генерируем индекс Packages для каждой архитектуры
           find ./public -mindepth 3 -type d | while read dir; do
             if [ -n "$(find "$dir" -name '*.apk' -print -quit)" ]; then
               echo "Generating Packages index for: $dir"
               
-              # Используем opkg-make-index для APK пакетов
               (cd "$dir" && opkg-make-index . > Packages 2>/dev/null || true)
               
-              # Создаем сжатый индекс
               if [ -f "$dir/Packages" ]; then
                 gzip -c "$dir/Packages" > "$dir/Packages.gz" 2>/dev/null || true
               fi
@@ -301,7 +276,7 @@ jobs:
             opkg update
             opkg install byedpi
             ```
-          draft: true  # RC версии как черновик
+          draft: true  # RC
           prerelease: true
           files: ./public/**/*.apk
           
