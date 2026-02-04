@@ -50,464 +50,60 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        branch:
+          - openwrt-19.07
+          - openwrt-21.02
+          - openwrt-22.03
+          - openwrt-23.05
+          - openwrt-24.10
+          - openwrt-25.12.0-rc4
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a7_vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_mpcore
+          - arm_xscale
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - x86_64
+        exclude:
+          - branch: openwrt-19.07
+            arch: arm_cortex-a7
+          - branch: openwrt-19.07
+            arch: arm_cortex-a7_vfpv4
+          - branch: openwrt-19.07
+            arch: mips_4kec
+          - branch: openwrt-21.02
+            arch: arm_cortex-a7_vfpv4
+          - branch: openwrt-24.10
+            arch: arm_mpcore
+          - branch: openwrt-25.12.0-rc4
+            arch: arm_mpcore
         include:
-          # OpenWrt 19.07 (Docker Hub)
-          - branch: openwrt-19.07
-            arch: aarch64_cortex-a53
-            sdk_image: openwrt/sdk:aarch64_cortex-a53-19.07
-          - branch: openwrt-19.07
-            arch: aarch64_cortex-a72
-            sdk_image: openwrt/sdk:aarch64_cortex-a72-19.07
-          - branch: openwrt-19.07
-            arch: aarch64_generic
-            sdk_image: openwrt/sdk:aarch64_generic-19.07
-          - branch: openwrt-19.07
-            arch: arm_arm1176jzf-s_vfp
-            sdk_image: openwrt/sdk:arm_arm1176jzf-s_vfp-19.07
-          - branch: openwrt-19.07
-            arch: arm_arm926ej-s
-            sdk_image: openwrt/sdk:arm_arm926ej-s-19.07
-          - branch: openwrt-19.07
-            arch: arm_cortex-a15_neon-vfpv4
-            sdk_image: openwrt/sdk:arm_cortex-a15_neon-vfpv4-19.07
-          - branch: openwrt-19.07
-            arch: arm_cortex-a5_vfpv4
-            sdk_image: openwrt/sdk:arm_cortex-a5_vfpv4-19.07
-          - branch: openwrt-19.07
-            arch: arm_cortex-a8_vfpv3
-            sdk_image: openwrt/sdk:arm_cortex-a8_vfpv3-19.07
-          - branch: openwrt-19.07
-            arch: arm_cortex-a9
-            sdk_image: openwrt/sdk:arm_cortex-a9-19.07
-          - branch: openwrt-19.07
-            arch: arm_cortex-a9_neon
-            sdk_image: openwrt/sdk:arm_cortex-a9_neon-19.07
-          - branch: openwrt-19.07
-            arch: arm_fa526
-            sdk_image: openwrt/sdk:arm_fa526-19.07
-          - branch: openwrt-19.07
-            arch: arm_mpcore
-            sdk_image: openwrt/sdk:arm_mpcore-19.07
-          - branch: openwrt-19.07
-            arch: arm_xscale
-            sdk_image: openwrt/sdk:arm_xscale-19.07
-          - branch: openwrt-19.07
-            arch: mips64_octeonplus
-            sdk_image: openwrt/sdk:mips64_octeonplus-19.07
-          - branch: openwrt-19.07
-            arch: mips_24kc
-            sdk_image: openwrt/sdk:mips_24kc-19.07
-          - branch: openwrt-19.07
-            arch: mips_mips32
-            sdk_image: openwrt/sdk:mips_mips32-19.07
-          - branch: openwrt-19.07
-            arch: mipsel_24kc
-            sdk_image: openwrt/sdk:mipsel_24kc-19.07
-          - branch: openwrt-19.07
-            arch: mipsel_24kc_24kf
-            sdk_image: openwrt/sdk:mipsel_24kc_24kf-19.07
-          - branch: openwrt-19.07
-            arch: mipsel_74kc
-            sdk_image: openwrt/sdk:mipsel_74kc-19.07
-          - branch: openwrt-19.07
-            arch: mipsel_mips32
-            sdk_image: openwrt/sdk:mipsel_mips32-19.07
-          - branch: openwrt-19.07
-            arch: x86_64
-            sdk_image: openwrt/sdk:x86_64-19.07
-
-          # OpenWrt 21.02 (GHCR)
-          - branch: openwrt-21.02
-            arch: aarch64_cortex-a53
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a53-21.02
-          - branch: openwrt-21.02
-            arch: aarch64_cortex-a72
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a72-21.02
-          - branch: openwrt-21.02
-            arch: aarch64_generic
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_generic-21.02
-          - branch: openwrt-21.02
-            arch: arm_arm1176jzf-s_vfp
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm1176jzf-s_vfp-21.02
-          - branch: openwrt-21.02
-            arch: arm_arm926ej-s
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm926ej-s-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a15_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a15_neon-vfpv4-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a5_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a5_vfpv4-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a7
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a7_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_neon-vfpv4-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a8_vfpv3
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a8_vfpv3-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a9
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a9_neon
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_neon-21.02
-          - branch: openwrt-21.02
-            arch: arm_cortex-a9_vfpv3-d16
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_vfpv3-d16-21.02
-          - branch: openwrt-21.02
-            arch: arm_fa526
-            sdk_image: ghcr.io/openwrt/sdk:arm_fa526-21.02
-          - branch: openwrt-21.02
-            arch: arm_mpcore
-            sdk_image: ghcr.io/openwrt/sdk:arm_mpcore-21.02
-          - branch: openwrt-21.02
-            arch: arm_xscale
-            sdk_image: ghcr.io/openwrt/sdk:arm_xscale-21.02
-          - branch: openwrt-21.02
-            arch: mips64_octeonplus
-            sdk_image: ghcr.io/openwrt/sdk:mips64_octeonplus-21.02
-          - branch: openwrt-21.02
-            arch: mips_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mips_24kc-21.02
-          - branch: openwrt-21.02
-            arch: mips_4kec
-            sdk_image: ghcr.io/openwrt/sdk:mips_4kec-21.02
-          - branch: openwrt-21.02
-            arch: mips_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mips_mips32-21.02
-          - branch: openwrt-21.02
-            arch: mipsel_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc-21.02
-          - branch: openwrt-21.02
-            arch: mipsel_24kc_24kf
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc_24kf-21.02
-          - branch: openwrt-21.02
-            arch: mipsel_74kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_74kc-21.02
-          - branch: openwrt-21.02
-            arch: mipsel_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_mips32-21.02
-          - branch: openwrt-21.02
-            arch: x86_64
-            sdk_image: ghcr.io/openwrt/sdk:x86_64-21.02
-
-          # OpenWrt 22.03 (GHCR)
-          - branch: openwrt-22.03
-            arch: aarch64_cortex-a53
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a53-22.03
-          - branch: openwrt-22.03
-            arch: aarch64_cortex-a72
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a72-22.03
-          - branch: openwrt-22.03
-            arch: aarch64_generic
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_generic-22.03
-          - branch: openwrt-22.03
-            arch: arm_arm1176jzf-s_vfp
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm1176jzf-s_vfp-22.03
-          - branch: openwrt-22.03
-            arch: arm_arm926ej-s
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm926ej-s-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a15_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a15_neon-vfpv4-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a5_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a5_vfpv4-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a7
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a7_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_neon-vfpv4-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a7_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_vfpv4-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a8_vfpv3
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a8_vfpv3-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a9
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a9_neon
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_neon-22.03
-          - branch: openwrt-22.03
-            arch: arm_cortex-a9_vfpv3-d16
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_vfpv3-d16-22.03
-          - branch: openwrt-22.03
-            arch: arm_fa526
-            sdk_image: ghcr.io/openwrt/sdk:arm_fa526-22.03
-          - branch: openwrt-22.03
-            arch: arm_mpcore
-            sdk_image: ghcr.io/openwrt/sdk:arm_mpcore-22.03
-          - branch: openwrt-22.03
-            arch: arm_xscale
-            sdk_image: ghcr.io/openwrt/sdk:arm_xscale-22.03
-          - branch: openwrt-22.03
-            arch: mips64_octeonplus
-            sdk_image: ghcr.io/openwrt/sdk:mips64_octeonplus-22.03
-          - branch: openwrt-22.03
-            arch: mips_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mips_24kc-22.03
-          - branch: openwrt-22.03
-            arch: mips_4kec
-            sdk_image: ghcr.io/openwrt/sdk:mips_4kec-22.03
-          - branch: openwrt-22.03
-            arch: mips_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mips_mips32-22.03
-          - branch: openwrt-22.03
-            arch: mipsel_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc-22.03
-          - branch: openwrt-22.03
-            arch: mipsel_24kc_24kf
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc_24kf-22.03
-          - branch: openwrt-22.03
-            arch: mipsel_74kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_74kc-22.03
-          - branch: openwrt-22.03
-            arch: mipsel_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_mips32-22.03
-          - branch: openwrt-22.03
-            arch: x86_64
-            sdk_image: ghcr.io/openwrt/sdk:x86_64-22.03
-
-          # OpenWrt 23.05 (GHCR)
-          - branch: openwrt-23.05
-            arch: aarch64_cortex-a53
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a53-23.05
-          - branch: openwrt-23.05
-            arch: aarch64_cortex-a72
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a72-23.05
-          - branch: openwrt-23.05
-            arch: aarch64_generic
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_generic-23.05
-          - branch: openwrt-23.05
-            arch: arm_arm1176jzf-s_vfp
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm1176jzf-s_vfp-23.05
-          - branch: openwrt-23.05
-            arch: arm_arm926ej-s
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm926ej-s-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a15_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a15_neon-vfpv4-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a5_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a5_vfpv4-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a7
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a7_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_neon-vfpv4-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a7_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_vfpv4-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a8_vfpv3
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a8_vfpv3-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a9
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a9_neon
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_neon-23.05
-          - branch: openwrt-23.05
-            arch: arm_cortex-a9_vfpv3-d16
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_vfpv3-d16-23.05
-          - branch: openwrt-23.05
-            arch: arm_fa526
-            sdk_image: ghcr.io/openwrt/sdk:arm_fa526-23.05
-          - branch: openwrt-23.05
-            arch: arm_mpcore
-            sdk_image: ghcr.io/openwrt/sdk:arm_mpcore-23.05
-          - branch: openwrt-23.05
-            arch: arm_xscale
-            sdk_image: ghcr.io/openwrt/sdk:arm_xscale-23.05
-          - branch: openwrt-23.05
-            arch: mips64_octeonplus
-            sdk_image: ghcr.io/openwrt/sdk:mips64_octeonplus-23.05
-          - branch: openwrt-23.05
-            arch: mips_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mips_24kc-23.05
-          - branch: openwrt-23.05
-            arch: mips_4kec
-            sdk_image: ghcr.io/openwrt/sdk:mips_4kec-23.05
-          - branch: openwrt-23.05
-            arch: mips_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mips_mips32-23.05
-          - branch: openwrt-23.05
-            arch: mipsel_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc-23.05
-          - branch: openwrt-23.05
-            arch: mipsel_24kc_24kf
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc_24kf-23.05
-          - branch: openwrt-23.05
-            arch: mipsel_74kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_74kc-23.05
-          - branch: openwrt-23.05
-            arch: mipsel_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_mips32-23.05
-          - branch: openwrt-23.05
-            arch: x86_64
-            sdk_image: ghcr.io/openwrt/sdk:x86_64-23.05
-
-          # OpenWrt 24.10 (GHCR)
-          - branch: openwrt-24.10
-            arch: aarch64_cortex-a53
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a53-24.10
-          - branch: openwrt-24.10
-            arch: aarch64_cortex-a72
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a72-24.10
-          - branch: openwrt-24.10
-            arch: aarch64_generic
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_generic-24.10
           - branch: openwrt-24.10
             arch: aarch64_cortex-a76
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a76-24.10
-          - branch: openwrt-24.10
-            arch: arm_arm1176jzf-s_vfp
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm1176jzf-s_vfp-24.10
-          - branch: openwrt-24.10
-            arch: arm_arm926ej-s
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm926ej-s-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a15_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a15_neon-vfpv4-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a5_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a5_vfpv4-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a7
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a7_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_neon-vfpv4-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a7_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_vfpv4-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a8_vfpv3
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a8_vfpv3-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a9
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a9_neon
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_neon-24.10
-          - branch: openwrt-24.10
-            arch: arm_cortex-a9_vfpv3-d16
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_vfpv3-d16-24.10
-          - branch: openwrt-24.10
-            arch: arm_fa526
-            sdk_image: ghcr.io/openwrt/sdk:arm_fa526-24.10
-          - branch: openwrt-24.10
-            arch: arm_xscale
-            sdk_image: ghcr.io/openwrt/sdk:arm_xscale-24.10
-          - branch: openwrt-24.10
-            arch: mips64_octeonplus
-            sdk_image: ghcr.io/openwrt/sdk:mips64_octeonplus-24.10
-          - branch: openwrt-24.10
-            arch: mips_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mips_24kc-24.10
-          - branch: openwrt-24.10
-            arch: mips_4kec
-            sdk_image: ghcr.io/openwrt/sdk:mips_4kec-24.10
-          - branch: openwrt-24.10
-            arch: mips_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mips_mips32-24.10
-          - branch: openwrt-24.10
-            arch: mipsel_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc-24.10
-          - branch: openwrt-24.10
-            arch: mipsel_24kc_24kf
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc_24kf-24.10
-          - branch: openwrt-24.10
-            arch: mipsel_74kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_74kc-24.10
-          - branch: openwrt-24.10
-            arch: mipsel_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_mips32-24.10
-          - branch: openwrt-24.10
-            arch: x86_64
-            sdk_image: ghcr.io/openwrt/sdk:x86_64-24.10
-
-          # OpenWrt 25.12.0-rc4 (GHCR)
-          - branch: openwrt-25.12.0-rc4
-            arch: aarch64_cortex-a53
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a53-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: aarch64_cortex-a72
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a72-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: aarch64_generic
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_generic-25.12.0-rc4
           - branch: openwrt-25.12.0-rc4
             arch: aarch64_cortex-a76
-            sdk_image: ghcr.io/openwrt/sdk:aarch64_cortex-a76-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_arm1176jzf-s_vfp
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm1176jzf-s_vfp-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_arm926ej-s
-            sdk_image: ghcr.io/openwrt/sdk:arm_arm926ej-s-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a15_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a15_neon-vfpv4-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a5_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a5_vfpv4-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a7
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a7_neon-vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_neon-vfpv4-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a7_vfpv4
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a7_vfpv4-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a8_vfpv3
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a8_vfpv3-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a9
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_cortex-a9_neon
-            sdk_image: ghcr.io/openwrt/sdk:arm_cortex-a9_neon-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_fa526
-            sdk_image: ghcr.io/openwrt/sdk:arm_fa526-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: arm_xscale
-            sdk_image: ghcr.io/openwrt/sdk:arm_xscale-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mips64_octeonplus
-            sdk_image: ghcr.io/openwrt/sdk:mips64_octeonplus-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mips_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mips_24kc-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mips_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mips_mips32-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mipsel_24kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mipsel_24kc_24kf
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_24kc_24kf-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mipsel_74kc
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_74kc-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: mipsel_mips32
-            sdk_image: ghcr.io/openwrt/sdk:mipsel_mips32-25.12.0-rc4
-          - branch: openwrt-25.12.0-rc4
-            arch: x86_64
-            sdk_image: ghcr.io/openwrt/sdk:x86_64-25.12.0-rc4
     container:
-      image: ${{ matrix.sdk_image }}
+      image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
       options: --user root
     defaults: { run: { shell: bash } }
     env:
