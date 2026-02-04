@@ -182,9 +182,10 @@ jobs:
             if [ -f "$apk" ]; then
               echo "  - File: $(basename $apk)"
               echo "    Size: $(stat -c%s $apk) bytes"
-              # Extract version from filename if possible
-              if [[ $(basename $apk) =~ byedpi-([0-9.]+) ]]; then
-                echo "    Version in filename: ${BASH_REMATCH[1]}"
+              # Extract version from filename using grep (sh-compatible)
+              version=$(basename "$apk" | grep -o 'byedpi-[0-9][0-9.]*' | cut -d- -f2)
+              if [ -n "$version" ]; then
+                echo "    Version in filename: $version"
               fi
             fi
           done
@@ -345,16 +346,15 @@ jobs:
               # Get original filename
               orig_name=$(basename "$apk_file")
               
-              # Check if filename already contains architecture
-              if [[ "$orig_name" =~ -${arch}\.apk$ ]]; then
+              # Check if filename already contains architecture (sh-compatible)
+              if echo "$orig_name" | grep -q "-${arch}\.apk$"; then
                 # File already has architecture in name
                 new_name="$orig_name"
                 echo "    Already has architecture: $new_name"
               else
                 # Extract version from original filename
-                if [[ "$orig_name" =~ byedpi-([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-                  file_version="${BASH_REMATCH[1]}"
-                else
+                file_version=$(echo "$orig_name" | grep -o 'byedpi-[0-9][0-9.]*' | cut -d- -f2)
+                if [ -z "$file_version" ]; then
                   file_version="$CLEAN_VERSION"
                 fi
                 
@@ -373,7 +373,7 @@ jobs:
           
           echo ""
           echo "=== FINAL RELEASE FILES ==="
-          if [ -n "$(ls -A ./release_files 2>/dev/null)" ]; then
+          if ls ./release_files/*.apk 1> /dev/null 2>&1; then
             ls -la ./release_files/
             echo "has_files=true" >> $GITHUB_OUTPUT
             echo "Total files: $(ls -1 ./release_files/*.apk 2>/dev/null | wc -l)"
@@ -407,4 +407,3 @@ jobs:
           draft: false
           prerelease: true
           files: ./release_files/*.apk
-          
