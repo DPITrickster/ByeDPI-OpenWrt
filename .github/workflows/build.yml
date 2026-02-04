@@ -1,15 +1,12 @@
-name: build
-
 permissions:
   contents: write
 
+name: build
+
 on:
   workflow_dispatch:
-
-env:
-  REPO: 'hufrea/byedpi'
-  PKG_PATH: byedpi
-  SDKDIR: /builder
+  schedule:
+    - cron: '0 0 */14 * *'
 
 jobs:
   check:
@@ -26,8 +23,9 @@ jobs:
         id: get_tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: 'hufrea/byedpi'
         run: |
-          TAG=$(curl -s -H "Authorization: token $GH_TOKEN" "https://api.github.com/repos/${REPO}/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
+          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
           echo "Latest upstream tag: $TAG"
 
           if [ -f .last_release_tag ]; then
@@ -58,14 +56,10 @@ jobs:
           - openwrt-22.03
           - openwrt-23.05
           - openwrt-24.10
-          - openwrt-25.12.0-rc1
-          - openwrt-25.12.0-rc2
-          - openwrt-25.12.0-rc3
           - openwrt-25.12.0-rc4
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
-          - aarch64_cortex-a76
           - aarch64_generic
           - arm_arm1176jzf-s_vfp
           - arm_arm926ej-s
@@ -101,170 +95,171 @@ jobs:
             arch: arm_cortex-a7_vfpv4
           - branch: openwrt-24.10
             arch: arm_mpcore
-          - branch: openwrt-25.12.0-rc1
-            arch: mips_4kec
-          - branch: openwrt-25.12.0-rc2
-            arch: mips_4kec
-          - branch: openwrt-25.12.0-rc3
-            arch: mips_4kec
+          - branch: openwrt-25.12.0-rc4
+            arch: arm_mpcore
+          - branch: openwrt-25.12.0-rc4
+            arch: arm_cortex-a9_vfpv3-d16
           - branch: openwrt-25.12.0-rc4
             arch: mips_4kec
         include:
           - branch: openwrt-24.10
             arch: aarch64_cortex-a76
-          - branch: openwrt-25.12.0-rc1
-            arch: aarch64_cortex-a76
-          - branch: openwrt-25.12.0-rc2
-            arch: aarch64_cortex-a76
-          - branch: openwrt-25.12.0-rc3
-            arch: aarch64_cortex-a76
           - branch: openwrt-25.12.0-rc4
             arch: aarch64_cortex-a76
-
     container:
       image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
       options: --user root
-
+    defaults: { run: { shell: bash } }
     env:
       UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
-
+      PKG_TYPE: ${{ contains(matrix.branch, '25.12') && 'apk' || 'ipk' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Detect PKGTYPE and WORKDIR
-        id: detect
-        run: |
-          BR="${{ matrix.branch }}"
-          if echo "$BR" | grep -q "25.12"; then
-            PKGTYPE=apk
-          else
-            PKGTYPE=ipk
-          fi
-
-          if [ "$BR" = "openwrt-19.07" ]; then
-            WORKDIR=/home/build/openwrt
-          else
-            WORKDIR=${SDKDIR}
-          fi
-
-          echo "pkgtype=$PKGTYPE" >> $GITHUB_OUTPUT
-          echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
-          echo "arch=${{ matrix.arch }}" >> $GITHUB_OUTPUT
-
-      - name: Run setup.sh when needed
-        working-directory: ${{ steps.detect.outputs.workdir }}
-        run: |
-          BR="${{ matrix.branch }}"
-          case "$BR" in
-            *23.05*|*24.10*|*25.12*)
-              if [ -f ./setup.sh ]; then
-                HOME="${{ steps.detect.outputs.workdir }}" ./setup.sh || true
-              fi
-              ;;
-          esac
+      - name: Setup SDK
+        if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'openwrt-25.12.0-rc4' }}
+        working-directory: /builder
+        run: HOME=/builder ./setup.sh
 
       - name: Prepare package (set version)
-        working-directory: ${{ steps.detect.outputs.workdir }}
-        env:
-          UPSTREAM_TAG: ${{ env.UPSTREAM_TAG }}
-          PKG_PATH: ${{ env.PKG_PATH }}
         run: |
-          V=${UPSTREAM_TAG#v}
-          sed -i "s|@VERSION@|$V|" "${PKG_PATH}/Makefile" || true
+          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
 
-      - name: Add feeds and compile package
+      - name: Compile package
         id: compile
-        working-directory: ${{ steps.detect.outputs.workdir }}
+        working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
-          PKGTYPE: ${{ steps.detect.outputs.pkgtype }}
-          PKG_PATH: ${{ env.PKG_PATH }}
+          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
-          echo "src-link ${PKG_PATH} $GITHUB_WORKSPACE" >> feeds.conf
-          ./scripts/feeds update ${PKG_PATH} || true
-          ./scripts/feeds install -a -p ${PKG_PATH} || true
-          make defconfig || true
-          make package/${PKG_PATH}/compile V=s -j$(nproc) || true
+          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
+          ./scripts/feeds update byedpi
+          ./scripts/feeds install -a -p byedpi
+          make defconfig
+          make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
+          echo "$SIGN_KEY" | base64 -d > key-build
+          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/$PKG_TYPE-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
-          OUT_TAR="$GITHUB_WORKSPACE/${PKGTYPE}-${BRANCH}-${ARCH}.tar"
-          find ./bin/packages -type f -name "*.${PKGTYPE}" -print0 \
-            | xargs -0 -r tar -C . -cvf "$OUT_TAR" --no-recursion
-          echo "OUTPUT_TAR=$OUT_TAR" >> $GITHUB_OUTPUT
+      - name: Compress build logs
+        if: ${{ always() }}
+        env:
+          ARCH: ${{ matrix.arch }}
+          BRANCH: ${{ matrix.branch }}
+          LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
+        run: |
+          if [ -d "$LOGS_DIR" ]; then
+            tar -cJvf logs-$BRANCH-$ARCH.tar.xz "$LOGS_DIR"
+          else
+            echo "No logs dir at $LOGS_DIR — skipping compression."
+          fi
 
-      - name: Upload packages artifact
-        if: ${{ steps.compile.outputs.OUTPUT_TAR != '' }}
+      - name: Upload packages
+        if: ${{ steps.compile.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: packages-${{ matrix.branch }}-${{ matrix.arch }}
-          path: ${{ steps.compile.outputs.OUTPUT_TAR }}
+          name: ${{ env.PKG_TYPE }}-${{ matrix.branch }}-${{ matrix.arch }}
+          path: ${{ env.PKG_TYPE }}-${{ matrix.branch }}-${{ matrix.arch }}.tar
+          if-no-files-found: error
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.branch }}-${{ matrix.arch }}
+          path: logs-*.tar.xz
+          if-no-files-found: ignore
 
   gh-pages:
     needs: [check, build]
     if: ${{ needs.check.outputs.tag != 'SKIP' }}
-    runs-on: ubuntu-latest
     permissions:
       contents: write
+    runs-on: ubuntu-latest
     steps:
-      - name: Download all package artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: packages-*
+          pattern: '*-*'
 
-      - name: Prepare public repo tree
+      - name: Prepare files
         run: |
           mkdir -p public
-          for f in packages-*.tar; do
-            tar -C public -xvf "$f" || true
-          done
-
-          printf "%s\n%s\n" \
-            "untrusted comment: ByeDPI OpenWrt repo" \
-            "RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA" \
-            > public/public.key
+          find . -name '*.tar' -exec tar -C ./public -xvf {} \;
+          cat <<EOF >> public/public.key
+          untrusted comment: ByeDPI OpenWrt repo
+          RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
+          EOF
 
       - name: Deploy to GH pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          user_name: github-actions[bot]
-          user_email: github-actions[bot]@users.noreply.github.com
-          publish_dir: ./public
-          full_commit_message: ByeDPI ${{ needs.check.outputs.tag }}
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          full_commit_message: 'ByeDPI ${{ needs.check.outputs.tag }}'
           force_orphan: true
 
       - name: Checkout repo to update last tag
+        if: ${{ success() }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Update .last_release_tag
+        if: ${{ success() }}
         run: |
-          git config user.name github-actions[bot]
-          git config user.email github-actions[bot]@users.noreply.github.com
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "${{ needs.check.outputs.tag }}" > .last_release_tag
           git add .last_release_tag
-          git commit -m "Update last_release_tag to ${{ needs.check.outputs.tag }} [skip ci]" || true
-          git push
+          git commit -m "Update last_release_tag to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
 
   release:
     needs: [check, build, gh-pages]
     if: ${{ needs.check.outputs.tag != 'SKIP' }}
-    runs-on: ubuntu-latest
     permissions:
       contents: write
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        branch:
+          - '19.07'
+          - '21.02'
+          - '22.03'
+          - '23.05'
+          - '24.10'
+          - '25.12.0-rc4'
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: packages-*
+          pattern: ${{ contains(matrix.branch, '25.12') && 'apk-*' || 'ipk-*' }}
 
-      - name: Create GitHub release
+      - name: Prepare files
+        env:
+          BRANCH: ${{ matrix.branch }}
+          PKG_TYPE: ${{ contains(matrix.branch, '25.12') && 'apk' || 'ipk' }}
+        run: |
+          find . -name "$PKG_TYPE-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards "*.$PKG_TYPE" \;
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: packages-*.tar
-          tag_name: ${{ needs.check.outputs.tag }}
-          name: ByeDPI ${{ needs.check.outputs.tag }}
+          fail_on_unmatched_files: true
+          tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
+          name: ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+          target_commitish: gh-pages
+          body: |
+            ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+
+            -----
+            Check the package architecture of your device using the command:
+            ```
+            # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            ```
+          files: ./**/*.${{ contains(matrix.branch, '25.12') && 'apk' || 'ipk' }}
+          
