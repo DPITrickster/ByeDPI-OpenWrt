@@ -154,9 +154,20 @@ jobs:
           if [ -n "$SIGN_KEY" ]; then
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
-          mkdir -p /tmp/apk-collection
-          find ./bin -name "byedpi*.apk" -exec cp --parents {} /tmp/apk-collection \;
-          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar .
+          
+          # Собираем все найденные APK файлы
+          mkdir -p /tmp/apk-collection/${{ env.ARCH_TAG }}
+          find ./bin -name "byedpi*.apk" -type f -exec cp {} /tmp/apk-collection/${{ env.ARCH_TAG }} \;
+          
+          # Проверяем, что файлы найдены
+          if [ -z "$(ls -A /tmp/apk-collection/${{ env.ARCH_TAG }})" ]; then
+            echo "ERROR: No APK files found for ${{ env.ARCH_TAG }}"
+            find ./bin -type f -name "*.apk" | head -5
+            exit 1
+          fi
+          
+          # Создаем архив с плоской структурой
+          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar ${{ env.ARCH_TAG }}
 
       - name: Upload APK packages
         if: steps.compile.outcome == 'success'
@@ -239,6 +250,8 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    env:
+      UPSTREAM_VERSION: ${{ needs.check.outputs.tag }}
     strategy:
       max-parallel: 1
       matrix:
@@ -254,16 +267,43 @@ jobs:
           pattern: apk-${{ matrix.sdk_version }}-*
           path: ./packages
 
-      - name: Extract APK files
+      - name: Extract and rename APK files
         run: |
-          find ./packages -name 'apk-*.tar' -exec tar -xvf {} --wildcards '*.apk' \;
-
-      - name: Clean up directory structure
-        run: |
-          # Перемещаем все .apk файлы в корневую директорию
-          find . -name "*.apk" -type f -exec mv {} . \;
-          # Удаляем лишние директории
-          rm -rf packages
+          # Создаем директорию для сборки
+          mkdir -p ./release_files
+          
+          # Убираем 'v' из версии
+          VERSION="${UPSTREAM_VERSION#v}"
+          
+          # Обрабатываем каждый архив
+          for tar_file in ./packages/apk-${{ matrix.sdk_version }}-*.tar; do
+            if [ ! -f "$tar_file" ]; then
+              continue
+            fi
+            
+            # Извлекаем архитектуру из имени файла
+            filename=$(basename "$tar_file" .tar)
+            arch=$(echo "$filename" | sed "s/apk-${{ matrix.sdk_version }}-//")
+            
+            # Временно извлекаем файлы
+            mkdir -p /tmp/extract
+            tar -xf "$tar_file" -C /tmp/extract
+            
+            # Находим и переименовываем APK файл
+            find /tmp/extract -name "byedpi*.apk" -type f | while read apk_file; do
+              base_name=$(basename "$apk_file")
+              new_name="${base_name%.apk}-${arch}.apk"
+              cp "$apk_file" "./release_files/$new_name"
+              echo "Renamed: $base_name -> $new_name"
+            done
+            
+            # Очищаем временную директорию
+            rm -rf /tmp/extract
+          done
+          
+          # Проверяем, что файлы созданы
+          echo "Generated files:"
+          ls -la ./release_files/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -275,12 +315,11 @@ jobs:
           body: |
             ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt 25.12 ${{ matrix.sdk_version }}
 
-            -----
-            Check the package architecture of your device using the command:
-            ```
-            # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            Check package architecture:
+            ```bash
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
           draft: false
           prerelease: true
-          files: ./*.apk
+          files: ./release_files/*.apk
           
