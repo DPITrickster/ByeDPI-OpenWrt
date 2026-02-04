@@ -104,7 +104,8 @@ jobs:
       - name: Setup OpenWrt SDK (from original workflow)
         working-directory: ${{ env.SDKDIR }}
         run: |
-          gpg --verbose --import <(wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc')
+          # Исправлено: заменена конструкция <(...) на pipe для совместимости с sh
+          wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc' | gpg --verbose --import
           sed -i 's/gpg --/#gpg --/g' setup.sh
           sed -r -i 's/^rm.+//' setup.sh
           ./setup.sh
