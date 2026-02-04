@@ -1,0 +1,307 @@
+# .github/workflows/build-apk.yml
+name: Build ByeDPI for OpenWrt 25.12 (RC versions)
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_NAME: byedpi
+  REPO_LNK: hufrea/byedpi
+  UPSTREAM_REPO: 'hufrea/byedpi'
+  PKGTYPE: apk  # Только APK формат для 25.12+
+  FRIENDLY_NAME: openwrt-25.12
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.get_tag.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get upstream latest release tag
+        id: get_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Используем GitHub CLI для получения тега
+          TAG=$(gh api repos/${{ env.UPSTREAM_REPO }}/releases/latest --jq '.tag_name')
+          echo "Latest upstream tag: $TAG"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk_version: 
+          - v25.12.0-rc1
+          - v25.12.0-rc2
+          - v25.12.0-rc3
+          - v25.12.0-rc4
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_cortex-a76
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a7_vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - riscv64_generic
+          - x86_64
+        exclude:
+          # Исключения из оригинального workflow для APK веток
+          - arch: arm_cortex-a9_vfpv3-d16
+          - arch: mips_4kec
+        include:
+          # Обязательные архитектуры (из оригинального workflow)
+          - arch: aarch64_cortex-a53
+          - arch: x86_64
+
+    container:
+      image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.sdk_version }}
+      options: --user root
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        id: setup
+        run: |
+          echo "SDKDIR=/builder" >> $GITHUB_ENV
+          echo "ARCH_TAG=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "SDK_VERSION=${{ matrix.sdk_version }}" >> $GITHUB_ENV
+          echo "Building for: ${{ matrix.arch }} with SDK ${{ matrix.sdk_version }}"
+
+      - name: Fix SDK paths (from original workflow)
+        run: |
+          mkdir -p $SDKDIR/shared-workdir
+          rm -rf $SDKDIR/shared-workdir/build
+          ln -sf $SDKDIR $SDKDIR/shared-workdir/build
+
+      - name: Setup OpenWrt SDK (from original workflow)
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          # Импортируем GPG ключ OpenWrt
+          gpg --verbose --import <(wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc')
+          # Отключаем проверку подписей (упрощаем)
+          sed -i 's/gpg --/#gpg --/g' setup.sh
+          # Отключаем очистку ключей
+          sed -r -i 's/^rm.+//' setup.sh
+          ./setup.sh
+
+      - name: Extract version from upstream tag
+        id: version
+        run: |
+          TAG="${{ needs.check.outputs.tag }}"
+          VERSION="${TAG#v}"  # Убираем 'v' в начале
+          echo "UPSTREAM_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Package version: $VERSION"
+
+      - name: Prepare package
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Устанавливаем версию в Makefile
+          sed "s|@VERSION@|${{ env.UPSTREAM_VERSION }}|" -i byedpi/Makefile
+          
+          # Копируем пакет в SDK (как в оригинальном workflow)
+          mkdir -p ${{ env.SDKDIR }}/package/${{ env.REPO_NAME }}
+          cp -r byedpi ${{ env.SDKDIR }}/package/
+
+      - name: Configure feeds and build
+        id: compile
+        working-directory: ${{ env.SDKDIR }}
+        env:
+          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
+        run: |
+          # Настраиваем feeds (упрощенная версия из оригинального workflow)
+          echo "src-link ${{ env.REPO_NAME }} ${{ env.SDKDIR }}/package/${{ env.REPO_NAME }}" >> feeds.conf
+          
+          # Обновляем и устанавливаем feeds
+          ./scripts/feeds update ${{ env.REPO_NAME }}
+          ./scripts/feeds install -a -p ${{ env.REPO_NAME }}
+          
+          # Конфигурируем
+          make defconfig
+          
+          # Отключаем минификацию JS/CSS (как в оригинальном workflow)
+          sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config 2>/dev/null || true
+          sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config 2>/dev/null || true
+          
+          # Собираем пакет
+          make package/${{ env.REPO_NAME }}/compile V=s -j$(nproc) BUILD_LOG=1
+          
+          # Подписываем пакеты, если есть ключ
+          if [ -n "$SIGN_KEY" ]; then
+            echo "$SIGN_KEY" | base64 -d > key-build
+            echo "APK packages signed"
+          fi
+          
+          # Копируем собранные пакеты
+          find ./bin/packages -name "byedpi*.apk" -exec cp {} ${{ github.workspace }} \;
+
+      - name: Prepare artifacts
+        if: steps.compile.outcome == 'success'
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Создаем структуру каталогов для артефактов
+          OUTPUT_DIR="${{ github.workspace }}/output/${{ env.FRIENDLY_NAME }}/${{ env.SDK_VERSION }}/${{ env.ARCH_TAG }}"
+          mkdir -p "$OUTPUT_DIR"
+          
+          # Перемещаем APK пакеты
+          mv *.apk "$OUTPUT_DIR/" 2>/dev/null || echo "No APK packages found"
+          
+          echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_ENV
+          echo "Artifacts prepared in: $OUTPUT_DIR"
+
+      - name: Compress build logs
+        if: always()
+        run: |
+          LOGS_DIR="${{ env.SDKDIR }}/logs"
+          if [ -d "$LOGS_DIR" ]; then
+            tar -cJvf ${{ github.workspace }}/logs-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}.tar.xz -C "${{ env.SDKDIR }}" logs/
+          else
+            echo "No logs directory found"
+          fi
+
+      - name: Upload APK packages
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}
+          path: ${{ env.OUTPUT_DIR }}
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ env.FRIENDLY_NAME }}-${{ env.SDK_VERSION }}-${{ env.ARCH_TAG }}
+          path: ${{ github.workspace }}/logs-*.tar.xz
+          if-no-files-found: ignore
+
+  deploy:
+    needs: [check, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: ./artifacts/apk
+          merge-multiple: true
+
+      - name: Prepare repository structure
+        run: |
+          # Создаем структуру репозитория APK пакетов
+          mkdir -p public
+          
+          # Копируем все APK пакеты с сохранением структуры
+          find ./artifacts/apk -type f -name "*.apk" | while read apk; do
+            # Извлекаем путь: artifacts/apk/openwrt-25.12/v25.12.0-rc2/aarch64_cortex-a53/
+            rel_path="${apk#./artifacts/apk/}"
+            
+            # Парсим путь: openwrt-25.12/v25.12.0-rc2/aarch64_cortex-a53/
+            friendly_name=$(echo "$rel_path" | cut -d'/' -f1)
+            sdk_version=$(echo "$rel_path" | cut -d'/' -f2)
+            arch=$(echo "$rel_path" | cut -d'/' -f3)
+            
+            target_dir="public/$friendly_name/$sdk_version/$arch"
+            mkdir -p "$target_dir"
+            cp "$apk" "$target_dir/"
+            echo "Copied $(basename "$apk") to $target_dir/"
+          done
+          
+          # Создаем файл с ключом репозитория
+          cat > public/public.key << 'EOF'
+          untrusted comment: ByeDPI OpenWrt repo
+          RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
+          EOF
+
+      - name: Generate Packages index for APK repository
+        run: |
+          # Генерируем индекс Packages для каждой архитектуры
+          find ./public -mindepth 3 -type d | while read dir; do
+            if [ -n "$(find "$dir" -name '*.apk' -print -quit)" ]; then
+              echo "Generating Packages index for: $dir"
+              
+              # Используем opkg-make-index для APK пакетов
+              (cd "$dir" && opkg-make-index . > Packages 2>/dev/null || true)
+              
+              # Создаем сжатый индекс
+              if [ -f "$dir/Packages" ]; then
+                gzip -c "$dir/Packages" > "$dir/Packages.gz" 2>/dev/null || true
+              fi
+            fi
+          done
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          publish_dir: ./public
+          force_orphan: true
+          commit_message: |
+            ByeDPI ${{ needs.check.outputs.tag }} - OpenWrt 25.12 RC repository
+            Built for all RC versions (rc1, rc2, rc3, rc4)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}-25.12-rc
+          name: ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt 25.12 RC
+          body: |
+            ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt 25.12 RC versions
+            
+            **Built for all RC SDK versions:**
+            - v25.12.0-rc1
+            - v25.12.0-rc2  
+            - v25.12.0-rc3
+            - v25.12.0-rc4
+            
+            **Repository URL:** https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+            
+            **Installation:**
+            ```bash
+            # Add repository to opkg (replace ARCH with your architecture)
+            echo "src/gz byedpi https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/openwrt-25.12/v25.12.0-rc2/\$(ARCH)" >> /etc/opkg/customfeeds.conf
+            
+            # Import repository key
+            wget -O /tmp/public.key https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/public.key
+            opkg-key add /tmp/public.key
+            
+            # Install package
+            opkg update
+            opkg install byedpi
+            ```
+          draft: true  # RC версии как черновик
+          prerelease: true
+          files: ./public/**/*.apk
+          
