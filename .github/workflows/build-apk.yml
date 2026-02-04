@@ -226,6 +226,16 @@ jobs:
           pattern: apk-*
           path: ./artifacts
 
+      - name: Debug GitHub Pages artifacts
+        run: |
+          echo "=== GITHUB PAGES ARTIFACTS DEBUG ==="
+          find ./artifacts -type f -name "*.tar" | while read f; do
+            echo "Found: $f"
+            echo "Size: $(stat -c%s "$f") bytes"
+            echo "---"
+          done
+          echo "=============================="
+
       - name: Prepare files for GitHub Pages
         run: |
           mkdir -p public
@@ -243,6 +253,13 @@ jobs:
               fi
             fi
           done
+
+      - name: Debug GitHub Pages files
+        run: |
+          echo "=== GITHUB PAGES FILES ==="
+          find ./public -type f -name "*.apk" | head -20
+          echo "Total APK files: $(find ./public -type f -name "*.apk" | wc -l)"
+          echo "======================"
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
@@ -279,91 +296,74 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPSTREAM_VERSION: ${{ needs.check.outputs.tag }}
-    strategy:
-      max-parallel: 1
-      matrix:
-        sdk_version:
-          - 'v25.12.0-rc1'
-          - 'v25.12.0-rc2'
-          - 'v25.12.0-rc3'
-          - 'v25.12.0-rc4'
     steps:
-      - name: Download artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: apk-${{ matrix.sdk_version }}-*
-          path: ./packages
+          path: ./artifacts
 
       - name: Debug downloaded artifacts
         run: |
           echo "=== DOWNLOADED ARTIFACTS DEBUG ==="
-          echo "Looking for tar files with pattern: apk-${{ matrix.sdk_version }}-*"
-          find ./packages -name "*.tar" -type f | while read tar_file; do
+          find ./artifacts -type f -name "*.tar" | while read tar_file; do
             echo "Found: $tar_file"
             echo "File size: $(stat -c%s "$tar_file") bytes"
             echo "Tar contents:"
             tar -tf "$tar_file" 2>/dev/null | head -5 || echo "Failed to list contents"
-            echo ""
+            echo "---"
           done
-          echo "================================"
 
-      - name: Extract and rename APK files
+      - name: Extract and prepare release files
         id: extract
         run: |
-          echo "=== APK EXTRACTION ==="
-          echo "SDK version: ${{ matrix.sdk_version }}"
-          echo "Upstream version: $UPSTREAM_VERSION"
-          
           mkdir -p ./release_files
           
           # Clean version (remove 'v' prefix if present)
           CLEAN_VERSION="${UPSTREAM_VERSION#v}"
           
-          # Process each tar file
-          for tar_file in ./packages/apk-${{ matrix.sdk_version }}-*.tar; do
-            if [ ! -f "$tar_file" ]; then
-              echo "No tar file found: $tar_file"
-              continue
-            fi
+          # Process all tar files
+          find ./artifacts -name "*.tar" -type f | while read tar_file; do
+            echo "Processing: $tar_file"
             
-            echo "Processing: $(basename $tar_file)"
-            
-            # Extract architecture from filename
+            # Extract SDK version and architecture from filename
             filename=$(basename "$tar_file" .tar)
-            arch=$(echo "$filename" | sed "s/apk-${{ matrix.sdk_version }}-//")
-            echo "  Architecture: $arch"
+            # Remove 'apk-' prefix
+            sdk_arch=${filename#apk-}
             
-            # Extract tar file to temporary directory
+            # Try to extract SDK version and architecture
+            # Format: v25.12.0-rc1-aarch64_cortex-a53
+            # We'll use a simple approach: take everything before the last dash as SDK version
+            # and the last part as architecture
+            SDK_VERSION=$(echo "$sdk_arch" | rev | cut -d'-' -f3- | rev)
+            ARCH=$(echo "$sdk_arch" | rev | cut -d'-' -f1,2 | rev)
+            
+            echo "  SDK version: $SDK_VERSION"
+            echo "  Architecture: $ARCH"
+            
+            # Extract tar file
             TEMP_DIR=$(mktemp -d)
-            echo "  Extracting to: $TEMP_DIR"
             tar -xf "$tar_file" -C "$TEMP_DIR"
             
             # Find APK files in the extracted directory
-            echo "  Looking for APK files..."
             find "$TEMP_DIR" -type f -name "*.apk" | while read apk_file; do
-              echo "    Found: $apk_file"
-              
-              # Get original filename
               orig_name=$(basename "$apk_file")
               
-              # Check if filename already contains architecture (sh-compatible)
-              if echo "$orig_name" | grep -q "-${arch}\.apk$"; then
-                # File already has architecture in name
-                new_name="$orig_name"
-                echo "    Already has architecture: $new_name"
-              else
-                # Extract version from original filename
-                file_version=$(echo "$orig_name" | grep -o 'byedpi-[0-9][0-9.]*' | cut -d- -f2)
-                if [ -z "$file_version" ]; then
-                  file_version="$CLEAN_VERSION"
-                fi
-                
-                # Create new name with architecture
-                new_name="byedpi-${file_version}-${arch}.apk"
-                echo "    Renaming to: $new_name"
+              # Extract version from original filename
+              file_version=$(echo "$orig_name" | grep -o 'byedpi-[0-9][0-9.]*' | cut -d- -f2)
+              if [ -z "$file_version" ]; then
+                file_version="$CLEAN_VERSION"
               fi
               
-              # Copy to release_files directory
+              # Check if filename already contains architecture
+              if echo "$orig_name" | grep -q "-${ARCH}\.apk$"; then
+                # File already has architecture in name
+                new_name="$orig_name"
+              else
+                # Create new name with architecture and SDK version
+                new_name="byedpi-${file_version}-${SDK_VERSION}-${ARCH}.apk"
+              fi
+              
+              echo "    Copying: $orig_name -> $new_name"
               cp "$apk_file" "./release_files/$new_name"
             done
             
@@ -379,31 +379,30 @@ jobs:
             echo "Total files: $(ls -1 ./release_files/*.apk 2>/dev/null | wc -l)"
           else
             echo "WARNING: No APK files found in ./release_files/"
-            echo "Listing packages directory:"
-            find ./packages -type f -name "*.tar" | head -5
+            find ./artifacts -type f -name "*.tar" | head -5
             echo "has_files=false" >> $GITHUB_OUTPUT
           fi
           echo "=========================="
 
-      - name: Create Release
+      - name: Create Combined Release
         if: steps.extract.outputs.has_files == 'true'
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
-          tag_name: ${{ needs.check.outputs.tag }}-25.12-${{ matrix.sdk_version }}
-          name: ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt 25.12 ${{ matrix.sdk_version }}
+          tag_name: ${{ env.UPSTREAM_VERSION }}-openwrt-25.12-rc
+          name: ByeDPI ${{ env.UPSTREAM_VERSION }} for OpenWrt 25.12 (RC versions)
           target_commitish: gh-pages
           body: |
-            ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt 25.12 ${{ matrix.sdk_version }}
-
-            **Package architecture:** `${{ matrix.sdk_version }}`
-
-            Check your device architecture:
+            ### ByeDPI ${{ env.UPSTREAM_VERSION }} for OpenWrt 25.12 RC versions
+            
+            This release contains APK packages for all RC versions (rc1, rc2, rc3, rc4) and all architectures.
+            
+            **Note:** Make sure to install the correct architecture package for your device.
+            Check your device architecture with:
             ```bash
             awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
-
-            **Note:** Make sure to install the correct architecture package for your device.
           draft: false
           prerelease: true
           files: ./release_files/*.apk
+          
