@@ -5,8 +5,6 @@ name: build
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 */14 * *'
 
 jobs:
   check:
