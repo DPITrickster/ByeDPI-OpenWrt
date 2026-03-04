@@ -2,9 +2,6 @@ name: Build ByeDPI for OpenWrt 25.12 (RC versions)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - byedpi-apk
 
 permissions:
   contents: write
