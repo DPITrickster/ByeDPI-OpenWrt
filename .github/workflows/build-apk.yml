@@ -258,9 +258,23 @@ jobs:
             echo "Extracting $tar_file"
             tar -xvf "$tar_file" -C ./release_files
           done
-          # Debug: list files
+
+          # Rename files to include architecture (like ipk naming: byedpi_<ver>_<arch>.apk)
+          find ./release_files -type f -name "*.apk" | while read apk; do
+            arch=$(basename "$(dirname "$apk")")
+            base=$(basename "$apk" .apk)
+            # replace first hyphen with underscore to match ipk style
+            new_base=$(echo "$base" | sed 's/-/_/')
+            new_name="${new_base}_${arch}.apk"
+            mv "$apk" "./release_files/$new_name"
+          done
+
+          # Remove empty directories
+          find ./release_files -type d -empty -delete
+
+          # Debug output
           echo "=== Files in release_files ==="
-          find ./release_files -type f -name "*.apk" | sort
+          ls -1 ./release_files/*.apk | sort
           echo "=============================="
 
       - name: Upload release assets
