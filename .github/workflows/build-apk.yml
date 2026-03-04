@@ -1,0 +1,280 @@
+name: Build ByeDPI for OpenWrt (APK)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 0 */14 * *'
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.get_tag.outputs.tag }}
+    steps:
+      - name: Checkout repository (to read .last_release_tag_apk)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get upstream latest release tag
+        id: get_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: 'hufrea/byedpi'
+        run: |
+          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
+          echo "Latest upstream tag: $TAG"
+
+          if [ -f .last_release_tag_apk ]; then
+            LAST=$(cat .last_release_tag_apk)
+          else
+            LAST=""
+          fi
+          echo "Last processed tag: $LAST"
+
+          if [ "$TAG" = "$LAST" ]; then
+            echo "tag=SKIP" >> $GITHUB_OUTPUT
+            echo "No new release. Skipping build."
+            exit 0
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  build:
+    needs: check
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk_version:
+          - v25.12.0
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_cortex-a76
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a7_vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - riscv64_generic
+          - x86_64
+        exclude:
+          - arch: arm_cortex-a9_vfpv3-d16
+          - arch: mips_4kec
+    container:
+      image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.sdk_version }}
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+    env:
+      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fix SDK paths
+        run: |
+          mkdir -p /builder/shared-workdir
+          rm -rf /builder/shared-workdir/build
+          ln -sf /builder /builder/shared-workdir/build
+
+      - name: Setup OpenWrt SDK
+        working-directory: /builder
+        run: |
+          wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc' | gpg --verbose --import
+          sed -i 's/gpg --/#gpg --/g' setup.sh
+          sed -r -i 's/^rm.+//' setup.sh
+          ./setup.sh
+
+      - name: Prepare package (set version)
+        run: |
+          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
+
+      - name: Compile package
+        id: compile
+        working-directory: /builder
+        env:
+          ARCH: ${{ matrix.arch }}
+          SDK_VERSION: ${{ matrix.sdk_version }}
+          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
+        run: |
+          # Add local feed
+          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
+          ./scripts/feeds update byedpi
+          ./scripts/feeds install -a -p byedpi
+
+          # Configure
+          make defconfig
+          # Disable JS/CSS minimization (optional, speeds up build)
+          sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config 2>/dev/null || true
+          sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config 2>/dev/null || true
+
+          # Build package
+          make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
+
+          # Import signing key if provided
+          if [ -n "$SIGN_KEY" ]; then
+            echo "$SIGN_KEY" | base64 -d > key-build
+          fi
+
+          # Collect APK files and create tar archive with proper structure
+          mkdir -p /tmp/apk-collection
+          find ./bin -name "byedpi*.apk" -type f -exec cp {} /tmp/apk-collection/ \;
+
+          if [ -z "$(ls -A /tmp/apk-collection)" ]; then
+            echo "ERROR: No APK files found for $ARCH"
+            find ./bin -type f -name "*.apk" | head -5
+            exit 1
+          fi
+
+          # Create tar with path: SDK_VERSION/ARCH/filename.apk
+          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-$SDK_VERSION-$ARCH.tar \
+            --transform "s|^|${SDK_VERSION#v}/$ARCH/|" --show-transformed-names .
+
+      - name: Compress build logs
+        if: always()
+        env:
+          ARCH: ${{ matrix.arch }}
+          SDK_VERSION: ${{ matrix.sdk_version }}
+        run: |
+          if [ -d "/builder/logs" ]; then
+            tar -cJvf logs-$SDK_VERSION-$ARCH.tar.xz /builder/logs
+          else
+            echo "No logs dir at /builder/logs — skipping compression."
+          fi
+
+      - name: Upload APK packages
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.sdk_version }}-${{ matrix.arch }}
+          path: apk-${{ matrix.sdk_version }}-${{ matrix.arch }}.tar
+          if-no-files-found: error
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.sdk_version }}-${{ matrix.arch }}
+          path: logs-*.tar.xz
+          if-no-files-found: ignore
+
+  gh-pages:
+    needs: [check, build]
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: ./artifacts
+
+      - name: Prepare files for GitHub Pages
+        run: |
+          mkdir -p public
+          find ./artifacts -name 'apk-*.tar' -exec tar -C ./public -xvf {} \;
+          cat > public/public.key << 'EOF'
+          untrusted comment: ByeDPI OpenWrt repo
+          RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
+          EOF
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          full_commit_message: 'ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt (APK)'
+          force_orphan: true
+          publish_dir: ./public
+
+      - name: Checkout repo to update last tag
+        if: success()
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Update .last_release_tag_apk
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "${{ needs.check.outputs.tag }}" > .last_release_tag_apk
+          git add .last_release_tag_apk
+          git commit -m "Update .last_release_tag_apk to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
+
+  release:
+    needs: [check, build, gh-pages]
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        sdk_version:
+          - v25.12.0
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: ./artifacts
+
+      - name: Prepare files for release
+        env:
+          SDK_VERSION: ${{ matrix.sdk_version }}
+        run: |
+          mkdir -p ./release_files
+          # Find all tar files for this SDK version
+          find ./artifacts -name "apk-$SDK_VERSION-*.tar" -type f | while read tar_file; do
+            echo "Extracting $tar_file"
+            tar -xvf "$tar_file" -C ./release_files
+          done
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.sdk_version }}
+          name: ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.sdk_version }}
+          target_commitish: gh-pages
+          body: |
+            ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.sdk_version }}
+
+            -----
+            
+            Check the package architecture of your device using the command:
+            
+            ```bash
+            files: ./release_files/**/*.apk
+            ```
+
+            files: ./release_files/**/*.apk
