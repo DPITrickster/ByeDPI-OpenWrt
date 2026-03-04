@@ -258,6 +258,10 @@ jobs:
             echo "Extracting $tar_file"
             tar -xvf "$tar_file" -C ./release_files
           done
+          # Debug: list files
+          echo "=== Files in release_files ==="
+          find ./release_files -type f -name "*.apk" | sort
+          echo "=============================="
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -270,11 +274,11 @@ jobs:
             ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.sdk_version }}
 
             -----
-            
+
             Check the package architecture of your device using the command:
-            
+
             ```bash
-            files: ./release_files/**/*.apk
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
 
-            files: ./release_files/**/*.apk
+          files: ./release_files/**/*.apk
