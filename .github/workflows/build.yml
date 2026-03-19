@@ -8,9 +8,6 @@ on:
   schedule:
     - cron: '0 0 */14 * *'
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   # 1. Check upstream
   check:
@@ -19,7 +16,7 @@ jobs:
       tag: ${{ steps.get_tag.outputs.tag }}
     steps:
       - name: Checkout repository (to read .last_release_tag)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -110,7 +107,7 @@ jobs:
       UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup SDK
         if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'SNAPSHOT' }}
@@ -153,14 +150,14 @@ jobs:
 
       - name: Upload packages
         if: ${{ steps.compile.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
           path: ipk-${{ matrix.branch }}-${{ matrix.arch }}.tar
           if-no-files-found: error
 
       - name: Upload build logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: logs-ipk-${{ matrix.branch }}-${{ matrix.arch }}
           path: logs-ipk-*.tar.xz
@@ -219,7 +216,7 @@ jobs:
       UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Fix SDK paths
         run: |
@@ -285,14 +282,14 @@ jobs:
 
       - name: Upload APK packages
         if: steps.compile.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: apk-${{ matrix.branch }}-${{ matrix.arch }}
           path: apk-${{ matrix.branch }}-${{ matrix.arch }}.tar
           if-no-files-found: error
 
       - name: Upload build logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: logs-apk-${{ matrix.branch }}-${{ matrix.arch }}
           path: logs-apk-*.tar.xz
@@ -307,13 +304,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download IPK artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: ipk-*
           path: ./artifacts
 
       - name: Download APK artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: apk-*
           path: ./artifacts
@@ -340,7 +337,7 @@ jobs:
 
       - name: Checkout repo to update last tag
         if: ${{ success() }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: true
@@ -379,7 +376,7 @@ jobs:
     steps:
       - name: Download IPK artifacts for OpenWrt ${{ matrix.branch }}
         if: ${{ matrix.format == 'ipk' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: ipk-openwrt-${{ matrix.branch }}-*
           path: ./artifacts
@@ -387,7 +384,7 @@ jobs:
 
       - name: Download APK artifacts for OpenWrt ${{ matrix.branch }}
         if: ${{ matrix.format == 'apk' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: apk-openwrt-${{ matrix.branch }}-*
           path: ./artifacts
