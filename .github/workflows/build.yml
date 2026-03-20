@@ -409,8 +409,11 @@ jobs:
           if [ "$FORMAT" = "ipk" ]; then
             find ./artifacts -name "ipk-openwrt-$BRANCH-*.tar" | while read tar_file; do
               echo "Extracting IPK: $tar_file"
-              tar -xvf "$tar_file" --wildcards '*.ipk' -C ./release_files
+              tar -xf "$tar_file" -C ./release_files
             done
+            # Flatten: move all .ipk files to release_files root
+            find ./release_files -name '*.ipk' -not -path './release_files/*.ipk' -exec mv {} ./release_files/ \;
+            find ./release_files -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
           else
             find ./artifacts -name "apk-openwrt-$BRANCH-*.tar" | while read tar_file; do
               echo "Extracting APK: $tar_file"
@@ -432,7 +435,7 @@ jobs:
           echo "=================================="
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v6
         with:
           fail_on_unmatched_files: true
           tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
@@ -446,4 +449,4 @@ jobs:
             ```
             # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
-          files: ./release_files/**/*
+          files: ./release_files/*
