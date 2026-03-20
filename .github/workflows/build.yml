@@ -1,197 +1,211 @@
-name: build
+name: Simple Build
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 */14 * *'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.prepare.outputs.tag }}
-    strategy:
-      fail-fast: false
-      matrix:
-        branch:
-          - openwrt-19.07
-          - openwrt-21.02
-          - openwrt-22.03
-          - openwrt-23.05
-          - openwrt-24.10
-        arch:
-          - aarch64_cortex-a53
-          - aarch64_cortex-a72
-          - aarch64_generic
-          - arm_arm1176jzf-s_vfp
-          - arm_arm926ej-s
-          - arm_cortex-a15_neon-vfpv4
-          - arm_cortex-a5_vfpv4
-          - arm_cortex-a7
-          - arm_cortex-a7_neon-vfpv4
-          - arm_cortex-a7_vfpv4
-          - arm_cortex-a8_vfpv3
-          - arm_cortex-a9
-          - arm_cortex-a9_neon
-          - arm_cortex-a9_vfpv3-d16
-          - arm_fa526
-          - arm_mpcore
-          - arm_xscale
-          - mips64_octeonplus
-          - mips_24kc
-          - mips_4kec
-          - mips_mips32
-          - mipsel_24kc
-          - mipsel_24kc_24kf
-          - mipsel_74kc
-          - mipsel_mips32
-          - x86_64
-        exclude:
-          - branch: openwrt-19.07
-            arch: arm_cortex-a7
-          - branch: openwrt-19.07
-            arch: arm_cortex-a7_vfpv4
-          - branch: openwrt-19.07
-            arch: mips_4kec
-          - branch: openwrt-21.02
-            arch: arm_cortex-a7_vfpv4
-          - branch: openwrt-24.10
-            arch: arm_mpcore
-        include:
-          - branch: openwrt-24.10
-            arch: aarch64_cortex-a76
-          # - branch: SNAPSHOT
-          #   arch: x86_64
-    container:
-      image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
-      options: --user root
-    defaults: { run: { shell: bash } }
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Setup SDK
-        if: matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'SNAPSHOT'
-        working-directory: /builder
-        run: HOME=/builder ./setup.sh
-
-      - name: Prepare build
-        id: prepare
+      - name: Get upstream latest release tag
+        id: get_tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: 'hufrea/byedpi'
-        run : |
-          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" http://api.github.com/repos/$REPO/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
-          sed "s|@VERSION@|${TAG#v}|" -i byedpi/Makefile
+        run: |
+          TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/hufrea/byedpi/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
+          echo "Latest upstream tag: $TAG"
+
+          if [ -f .last_simple_release_tag ]; then
+            LAST=$(cat .last_simple_release_tag)
+          else
+            LAST=""
+          fi
+          echo "Last processed tag: $LAST"
+
+          if [ "$TAG" = "$LAST" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No new release. Skipping build."
+            exit 0
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Build package
-        id: build
-        working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
+      - name: Setup nFPM
+        if: steps.get_tag.outputs.skip == 'false'
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update
+          sudo apt-get install -y nfpm
+
+      - name: Download binaries and build packages
+        if: steps.get_tag.outputs.skip == 'false'
         env:
-          ARCH: ${{ matrix.arch }}
-          BRANCH: ${{ matrix.branch }}
-          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
+          TAG: ${{ steps.get_tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
-          ./scripts/feeds update byedpi
-          ./scripts/feeds install -a -p byedpi
-          make defconfig
-          make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
-          echo "$SIGN_KEY" | base64 -d > key-build
-          make package/index
-          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+          VERSION=${TAG#v}
+          
+          # Map OpenWRT architectures to ByeDPI pre-built generic architectures
+          declare -A arch_map=(
+            ["aarch64_cortex-a53"]="aarch64"
+            ["aarch64_cortex-a72"]="aarch64"
+            ["aarch64_cortex-a76"]="aarch64"
+            ["aarch64_generic"]="aarch64"
+            ["arm_arm1176jzf-s_vfp"]="armv6"
+            ["arm_arm926ej-s"]="armv6"
+            ["arm_cortex-a15_neon-vfpv4"]="armv7l"
+            ["arm_cortex-a5_vfpv4"]="armv7l"
+            ["arm_cortex-a7"]="armv7l"
+            ["arm_cortex-a7_neon-vfpv4"]="armv7l"
+            ["arm_cortex-a7_vfpv4"]="armv7l"
+            ["arm_cortex-a8_vfpv3"]="armv7l"
+            ["arm_cortex-a9"]="armv7l"
+            ["arm_cortex-a9_neon"]="armv7l"
+            ["arm_cortex-a9_vfpv3-d16"]="armv7l"
+            ["arm_fa526"]="armv7l"
+            ["arm_mpcore"]="armv7l"
+            ["arm_xscale"]="armv7l"
+            ["mips64_octeonplus"]="mips"
+            ["mips_24kc"]="mips"
+            ["mips_4kec"]="mips"
+            ["mips_mips32"]="mips"
+            ["mipsel_24kc"]="mipsel"
+            ["mipsel_24kc_24kf"]="mipsel"
+            ["mipsel_74kc"]="mipsel"
+            ["mipsel_mips32"]="mipsel"
+            ["x86_64"]="x86_64"
+            ["riscv64_generic"]="riscv64"
+          )
 
-      - name: Compress build logs
-        if: always()
-        env:
-          ARCH: ${{ matrix.arch }}
-          BRANCH: ${{ matrix.branch }}
-          LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
-        run: |
-          tar -cJvf logs-$BRANCH-$ARCH.tar.xz $LOGS_DIR
+          mkdir -p packages
 
-      - name: Upload packages
-        if: steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
-          path: ipk-${{ matrix.branch }}-${{ matrix.arch }}.tar
-          if-no-files-found: error
+          # Retrieve unique generics to minimize downloads
+          unique_generics=$(printf "%s\n" "${arch_map[@]}" | sort -u)
 
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ matrix.branch }}-${{ matrix.arch }}
-          path: logs-*.tar.xz
+          # Fetch release json once to get precise asset URLs
+          wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/hufrea/byedpi/releases/tags/${TAG}" > release_data.json
 
-  gh-pages:
-    needs: build
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ipk-*
+          for gen_arch in $unique_generics; do
+            echo "Downloading generic arch: $gen_arch ..."
+            # Use grep with PCRE to extract the exact url regardless of version numbering
+            url=$(grep -oP "\"browser_download_url\": \"\K.*${gen_arch}\.tar\.gz(?=\")" release_data.json | head -n 1)
+            
+            if [ -n "$url" ]; then
+              echo "Found URL: $url"
+              if wget -q "$url" -O "byedpi-${gen_arch}.tar.gz"; then
+                mkdir -p "bin_${gen_arch}"
+                tar -xzf "byedpi-${gen_arch}.tar.gz" -C "bin_${gen_arch}"
+                echo "Extracted contents for $gen_arch:"
+                find "bin_${gen_arch}"
+              else
+                echo "Warning: Download failed from $url. Skipping..."
+              fi
+            else
+              echo "Warning: Release asset for $gen_arch not found. Skipping..."
+            fi
+          done
 
-      - name: Prepare files
-        run: |
-          mkdir public
-          find . -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
-          cat <<EOF >> public/public.key
-          untrusted comment: ByeDPI OpenWrt repo
-          RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
+          # Build for explicit OpenWrt architectures
+          for ow_arch in "${!arch_map[@]}"; do
+            gen_arch=${arch_map[$ow_arch]}
+            
+            if [ ! -d "bin_${gen_arch}" ]; then
+              echo "Skipping $ow_arch because generic arch $gen_arch failed to download."
+              continue
+            fi
+
+            ciadpi_path=$(find "bin_${gen_arch}" -name "ciadpi" -type f | head -n 1 || true)
+            if [ -z "$ciadpi_path" ]; then
+              echo "Skipping $ow_arch because ciadpi binary was not found in archive."
+              continue
+            fi
+            echo "Building $ow_arch using binary $ciadpi_path"
+
+            cp "$ciadpi_path" ./ciadpi
+
+            export ARCH=$ow_arch
+            export VERSION=$VERSION
+            
+            # Dynamic generation of nfpm config for this layout
+            cat << 'EOF' > nfpm.yaml
+          name: byedpi
+          arch: "${ARCH}"
+          platform: linux
+          version: "${VERSION}"
+          section: net
+          priority: optional
+          maintainer: "github-actions[bot]"
+          description: "ByeDPI - Bypass DPI"
+          homepage: "https://github.com/hufrea/byedpi"
+          vendor: "hufrea"
+          contents:
+            - src: ./ciadpi
+              dst: /usr/bin/ciadpi
+              file_info:
+                mode: 0755
           EOF
 
-      - name: Deploy to GH pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
-          full_commit_message: 'ByeDPI ${{ needs.build.outputs.tag }}'
-          force_orphan: true
+            # Append user's static config/init files if they exist in repo
+            if [ -f "byedpi/files/byedpi.init" ]; then
+              cat << 'EOF' >> nfpm.yaml
+            - src: ./byedpi/files/byedpi.init
+              dst: /etc/init.d/byedpi
+              file_info:
+                mode: 0755
+          EOF
+            fi
+            if [ -f "byedpi/files/byedpi.config" ]; then
+              cat << 'EOF' >> nfpm.yaml
+            - src: ./byedpi/files/byedpi.config
+              dst: /etc/config/byedpi
+              file_info:
+                mode: 0644
+          EOF
+            fi
 
-  release:
-    needs: [ build, gh-pages ]
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 1
-      matrix:
-        branch:
-          - '19.07'
-          - '21.02'
-          - '22.03'
-          - '23.05'
-          - '24.10'
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ipk-*
+            nfpm pkg --packager ipk --target "packages/byedpi_${VERSION}_${ow_arch}.ipk"
+            nfpm pkg --packager apk --target "packages/byedpi_${VERSION}_${ow_arch}.apk"
+            
+            # Cleanup temp config
+            rm -f nfpm.yaml ./ciadpi
+          done
 
-      - name: Prepare files
-        env:
-          BRANCH: ${{ matrix.branch }}
+      - name: Update last release tag
+        if: steps.get_tag.outputs.skip == 'false'
         run: |
-          find . -name "ipk-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards '*.ipk' \;
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "${{ steps.get_tag.outputs.tag }}" > .last_simple_release_tag
+          git add .last_simple_release_tag
+          git commit -m "Update simple-build release tag to ${{ steps.get_tag.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
 
-      - name: Upload release assets
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v6
+        if: steps.get_tag.outputs.skip == 'false'
+        with:
+          name: byedpi-packages
+          path: packages/*
+
+      - name: Create GitHub Release
+        if: steps.get_tag.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          fail_on_unmatched_files: true
-          tag_name: ${{ needs.build.outputs.tag }}-${{ matrix.branch }}
-          name: ${{ needs.build.outputs.tag }} for OpenWrt ${{ matrix.branch }}
-          target_commitish: gh-pages
-          body: |
-            ### ByeDPI ${{ needs.build.outputs.tag }} for OpenWrt ${{ matrix.branch }}
-
-            -----
-            Check the package architecture of your device using the command:
-            ```
-            # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
-            ```
-          files: ./**/*.ipk
+          tag_name: ${{ steps.get_tag.outputs.tag }}-generic
+          name: "ByeDPI ${{ steps.get_tag.outputs.tag }} (Generic OpenWrt Packages)"
+          files: packages/*
+          generate_release_notes: false
