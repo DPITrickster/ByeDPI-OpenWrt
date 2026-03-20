@@ -88,7 +88,9 @@ jobs:
             ["mipsel_74kc"]="mipsel"
             ["mipsel_mips32"]="mipsel"
             ["x86_64"]="x86_64"
-            ["riscv64_generic"]="riscv64"
+            ["i386_pentium4"]="i686"
+            ["powerpc_464fp"]="powerpc"
+            ["powerpc_8540"]="powerpc"
           )
 
           mkdir -p packages
