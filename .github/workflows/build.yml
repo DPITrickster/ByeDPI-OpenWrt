@@ -115,11 +115,12 @@ jobs:
         env:
           BRANCH: ${{ matrix.branch }}
         run: |
-          # Patch SNAPSHOT URL to stable release for branches where SNAPSHOT is dead
+          # Override VERSION_PATH for branches where SNAPSHOT URL is dead
           if [ "$BRANCH" = "openwrt-23.05" ]; then
-            sed -i 's|23\.05-SNAPSHOT|23.05.6|g' setup.sh
+            VERSION_PATH=releases/23.05.6 HOME=/builder ./setup.sh
+          else
+            HOME=/builder ./setup.sh
           fi
-          HOME=/builder ./setup.sh
 
 
       - name: Prepare package (set version)
