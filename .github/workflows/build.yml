@@ -180,7 +180,7 @@ jobs:
       fail-fast: false
       matrix:
         branch:
-          #- openwrt-25.12
+          - openwrt-25.12
           # for new branch add line:
           # - openwrt-26.01
         arch:
