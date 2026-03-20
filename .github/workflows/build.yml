@@ -335,6 +335,8 @@ jobs:
           EOF
 
       - name: Deploy to GH pages
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -435,7 +437,9 @@ jobs:
           echo "=================================="
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v6
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
           tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
