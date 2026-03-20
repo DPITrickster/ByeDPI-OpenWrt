@@ -128,7 +128,7 @@ jobs:
               continue
             fi
 
-            ciadpi_path=$(find "bin_${gen_arch}" -name "ciadpi" -type f | head -n 1 || true)
+            ciadpi_path=$(find "bin_${gen_arch}" -name "ciadpi*" -type f | head -n 1 || true)
             if [ -z "$ciadpi_path" ]; then
               echo "Skipping $ow_arch because ciadpi binary was not found in archive."
               continue
