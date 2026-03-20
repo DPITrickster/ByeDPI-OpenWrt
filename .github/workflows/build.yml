@@ -8,6 +8,9 @@ on:
   schedule:
     - cron: '0 0 */14 * *'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # 1. Check upstream
   check:
@@ -335,8 +338,6 @@ jobs:
           EOF
 
       - name: Deploy to GH pages
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -408,37 +409,40 @@ jobs:
         run: |
           mkdir -p ./release_files
 
+          echo "=== Artifacts ==="
+          ls -R ./artifacts/ | head -100
+          echo "================="
+
           if [ "$FORMAT" = "ipk" ]; then
-            find ./artifacts -name "ipk-openwrt-$BRANCH-*.tar" | while read tar_file; do
+            for tar_file in ./artifacts/ipk-openwrt-${BRANCH}-*/ipk-openwrt-${BRANCH}-*.tar; do
+              [ -f "$tar_file" ] || continue
               echo "Extracting IPK: $tar_file"
-              tar -xf "$tar_file" -C ./release_files
+              tar -xvf "$tar_file" -C ./release_files
             done
-            # Flatten: move all .ipk files to release_files root
-            find ./release_files -name '*.ipk' -not -path './release_files/*.ipk' -exec mv {} ./release_files/ \;
+            # Flatten: move all .ipk to release_files root
+            find ./release_files -mindepth 2 -name '*.ipk' -exec mv -t ./release_files {} +
             find ./release_files -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
           else
-            find ./artifacts -name "apk-openwrt-$BRANCH-*.tar" | while read tar_file; do
+            for tar_file in ./artifacts/apk-openwrt-${BRANCH}-*/apk-openwrt-${BRANCH}-*.tar; do
+              [ -f "$tar_file" ] || continue
               echo "Extracting APK: $tar_file"
               tmpdir=$(mktemp -d)
               tar -xvf "$tar_file" -C "$tmpdir"
-              find "$tmpdir" -type f -name "*.apk" | while read apk; do
+              find "$tmpdir" -type f -name '*.apk' | while read apk; do
                 arch=$(basename "$(dirname "$apk")")
                 base=$(basename "$apk" .apk)
                 new_base=$(echo "$base" | sed 's/-/_/')
-                new_name="${new_base}_${arch}.apk"
-                cp "$apk" "./release_files/$new_name"
+                cp "$apk" "./release_files/${new_base}_${arch}.apk"
               done
               rm -rf "$tmpdir"
             done
           fi
 
-          echo "=== Files for OpenWrt $BRANCH ==="
-          find ./release_files -type f | sort
-          echo "=================================="
+          echo "=== Release files for OpenWrt $BRANCH ==="
+          ls -la ./release_files/
+          echo "==========================================="
 
       - name: Upload release assets
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
