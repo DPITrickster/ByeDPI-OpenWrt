@@ -53,11 +53,11 @@ jobs:
       fail-fast: false
       matrix:
         branch:
-          # - openwrt-19.07
-          # - openwrt-21.02
-          # - openwrt-22.03
+          - openwrt-19.07
+          - openwrt-21.02
+          - openwrt-22.03
           - openwrt-23.05
-          # - openwrt-24.10
+          - openwrt-24.10
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
