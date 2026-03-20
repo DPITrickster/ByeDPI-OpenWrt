@@ -109,6 +109,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup SDK
+        if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' }}
+        working-directory: /builder
+        run: HOME=/builder ./setup.sh
+
 
       - name: Prepare package (set version)
         run: |
