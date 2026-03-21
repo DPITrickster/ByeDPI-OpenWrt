@@ -3,7 +3,7 @@ name: Simple Build
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 */14 * *'
+    - cron: '0 1 */14 * *'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
