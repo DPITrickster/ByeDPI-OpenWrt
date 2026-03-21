@@ -8,14 +8,18 @@ on:
   schedule:
     - cron: '0 0 */14 * *'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
+  # 1. Check upstream
   check:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.get_tag.outputs.tag }}
     steps:
       - name: Checkout repository (to read .last_release_tag)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -43,7 +47,8 @@ jobs:
 
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-  build:
+  # 2. IPK build
+  build-ipk:
     needs: check
     if: ${{ needs.check.outputs.tag != 'SKIP' }}
     runs-on: ubuntu-latest
@@ -105,16 +110,24 @@ jobs:
       UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup SDK
-        if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'SNAPSHOT' }}
+        if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' }}
         working-directory: /builder
-        run: HOME=/builder ./setup.sh
+        env:
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          # Override VERSION_PATH for branches where SNAPSHOT URL is dead
+          if [ "$BRANCH" = "openwrt-23.05" ]; then
+            VERSION_PATH=releases/23.05.6 HOME=/builder ./setup.sh
+          else
+            HOME=/builder ./setup.sh
+          fi
+
 
       - name: Prepare package (set version)
         run: |
-          # Используем UPSTREAM_TAG, полученный на этапе check
           sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
 
       - name: Compile package
@@ -131,7 +144,8 @@ jobs:
           make defconfig
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
           echo "$SIGN_KEY" | base64 -d > key-build
-          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar \
+            --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
       - name: Compress build logs
         if: ${{ always() }}
@@ -141,42 +155,183 @@ jobs:
           LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
         run: |
           if [ -d "$LOGS_DIR" ]; then
-            tar -cJvf logs-$BRANCH-$ARCH.tar.xz "$LOGS_DIR"
+            tar -cJvf logs-ipk-$BRANCH-$ARCH.tar.xz "$LOGS_DIR"
           else
             echo "No logs dir at $LOGS_DIR — skipping compression."
           fi
 
       - name: Upload packages
         if: ${{ steps.compile.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
           path: ipk-${{ matrix.branch }}-${{ matrix.arch }}.tar
           if-no-files-found: error
 
       - name: Upload build logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: logs-${{ matrix.branch }}-${{ matrix.arch }}
-          path: logs-*.tar.xz
+          name: logs-ipk-${{ matrix.branch }}-${{ matrix.arch }}
+          path: logs-ipk-*.tar.xz
           if-no-files-found: ignore
 
+  # 3. APK build
+  build-apk:
+    needs: check
+    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+          - openwrt-25.12
+          # for new branch add line:
+          # - openwrt-26.01
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_cortex-a76
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a7_vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - riscv64_generic
+          - x86_64
+        exclude:
+          - arch: arm_cortex-a9_vfpv3-d16
+          - arch: mips_4kec
+    container:
+      image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+    env:
+      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Fix SDK paths
+        run: |
+          mkdir -p /builder/shared-workdir
+          rm -rf /builder/shared-workdir/build
+          ln -sf /builder /builder/shared-workdir/build
+
+      - name: Setup OpenWrt SDK
+        working-directory: /builder
+        run: |
+          wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc' | gpg --verbose --import
+          sed -i 's/gpg --/#gpg --/g' setup.sh
+          sed -r -i 's/^rm.+//' setup.sh
+          ./setup.sh
+
+      - name: Prepare package (set version)
+        run: |
+          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
+
+      - name: Compile package
+        id: compile
+        working-directory: /builder
+        env:
+          ARCH: ${{ matrix.arch }}
+          BRANCH: ${{ matrix.branch }}
+          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
+        run: |
+          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
+          ./scripts/feeds update byedpi
+          ./scripts/feeds install -a -p byedpi
+          make defconfig
+          sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config 2>/dev/null || true
+          sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config 2>/dev/null || true
+          make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
+
+          if [ -n "$SIGN_KEY" ]; then
+            echo "$SIGN_KEY" | base64 -d > key-build
+          fi
+
+          mkdir -p /tmp/apk-collection
+          find ./bin -name "byedpi*.apk" -type f -exec cp {} /tmp/apk-collection/ \;
+
+          if [ -z "$(ls -A /tmp/apk-collection)" ]; then
+            echo "ERROR: No APK files found for $ARCH"
+            find ./bin -type f -name "*.apk" | head -5
+            exit 1
+          fi
+
+          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-$BRANCH-$ARCH.tar \
+            --transform "s|^|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+
+      - name: Compress build logs
+        if: always()
+        env:
+          ARCH: ${{ matrix.arch }}
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          if [ -d "/builder/logs" ]; then
+            tar -cJvf logs-apk-$BRANCH-$ARCH.tar.xz /builder/logs
+          else
+            echo "No logs dir at /builder/logs — skipping compression."
+          fi
+
+      - name: Upload APK packages
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: apk-${{ matrix.branch }}-${{ matrix.arch }}
+          path: apk-${{ matrix.branch }}-${{ matrix.arch }}.tar
+          if-no-files-found: error
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v6
+        with:
+          name: logs-apk-${{ matrix.branch }}-${{ matrix.arch }}
+          path: logs-apk-*.tar.xz
+          if-no-files-found: ignore
+
+  # 4. Deploy to GitHub Pages
   gh-pages:
-    needs: [check, build]
+    needs: [check, build-ipk, build-apk]
     if: ${{ needs.check.outputs.tag != 'SKIP' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Download IPK artifacts
+        uses: actions/download-artifact@v6
         with:
           pattern: ipk-*
+          path: ./artifacts
+
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: apk-*
+          path: ./artifacts
 
       - name: Prepare files
         run: |
           mkdir -p public
-          find . -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
+          find ./artifacts -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
+          find ./artifacts -name 'apk-*.tar' -exec tar -C ./public -xvf {} \;
           cat <<EOF >> public/public.key
           untrusted comment: ByeDPI OpenWrt repo
           RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
@@ -190,10 +345,11 @@ jobs:
           user_email: 'github-actions[bot]@users.noreply.github.com'
           full_commit_message: 'ByeDPI ${{ needs.check.outputs.tag }}'
           force_orphan: true
+          publish_dir: ./public
 
       - name: Checkout repo to update last tag
         if: ${{ success() }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: true
@@ -208,8 +364,9 @@ jobs:
           git commit -m "Update last_release_tag to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref_name }}
 
+  # 5. Release
   release:
-    needs: [check, build, gh-pages]
+    needs: [check, build-ipk, build-apk, gh-pages]
     if: ${{ needs.check.outputs.tag != 'SKIP' }}
     permissions:
       contents: write
@@ -217,23 +374,73 @@ jobs:
     strategy:
       max-parallel: 1
       matrix:
-        branch:
-          - '19.07'
-          - '21.02'
-          - '22.03'
-          - '23.05'
-          - '24.10'
+        # Each entry is a separate release.
+        # format: ipk  -> OpenWrt <= 24.10
+        # format: apk  -> OpenWrt >= 25.12
+        include:
+          - { branch: '19.07', format: ipk }
+          - { branch: '21.02', format: ipk }
+          - { branch: '22.03', format: ipk }
+          - { branch: '23.05', format: ipk }
+          - { branch: '24.10', format: ipk }
+          - { branch: '25.12', format: apk }
+          # - { branch: '26.01', format: apk }
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Download IPK artifacts for OpenWrt ${{ matrix.branch }}
+        if: ${{ matrix.format == 'ipk' }}
+        uses: actions/download-artifact@v6
         with:
-          pattern: ipk-*
+          pattern: ipk-openwrt-${{ matrix.branch }}-*
+          path: ./artifacts
+          merge-multiple: false
 
-      - name: Prepare files
+      - name: Download APK artifacts for OpenWrt ${{ matrix.branch }}
+        if: ${{ matrix.format == 'apk' }}
+        uses: actions/download-artifact@v6
+        with:
+          pattern: apk-openwrt-${{ matrix.branch }}-*
+          path: ./artifacts
+          merge-multiple: false
+
+      - name: Prepare release files
         env:
           BRANCH: ${{ matrix.branch }}
+          FORMAT: ${{ matrix.format }}
         run: |
-          find . -name "ipk-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards '*.ipk' \;
+          mkdir -p ./release_files
+
+          echo "=== Artifacts ==="
+          ls -R ./artifacts/ | head -100
+          echo "================="
+
+          if [ "$FORMAT" = "ipk" ]; then
+            for tar_file in ./artifacts/ipk-openwrt-${BRANCH}-*/ipk-openwrt-${BRANCH}-*.tar; do
+              [ -f "$tar_file" ] || continue
+              echo "Extracting IPK: $tar_file"
+              tar -xvf "$tar_file" -C ./release_files
+            done
+            # Flatten: move all .ipk to release_files root
+            find ./release_files -mindepth 2 -name '*.ipk' -exec mv -t ./release_files {} +
+            find ./release_files -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+          else
+            for tar_file in ./artifacts/apk-openwrt-${BRANCH}-*/apk-openwrt-${BRANCH}-*.tar; do
+              [ -f "$tar_file" ] || continue
+              echo "Extracting APK: $tar_file"
+              tmpdir=$(mktemp -d)
+              tar -xvf "$tar_file" -C "$tmpdir"
+              find "$tmpdir" -type f -name '*.apk' | while read apk; do
+                arch=$(basename "$(dirname "$apk")")
+                base=$(basename "$apk" .apk)
+                new_base=$(echo "$base" | sed 's/-/_/')
+                cp "$apk" "./release_files/${new_base}_${arch}.apk"
+              done
+              rm -rf "$tmpdir"
+            done
+          fi
+
+          echo "=== Release files for OpenWrt $BRANCH ==="
+          ls -la ./release_files/
+          echo "==========================================="
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -248,6 +455,6 @@ jobs:
             -----
             Check the package architecture of your device using the command:
             ```
-            # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
-          files: ./**/*.ipk
+          files: ./release_files/*
