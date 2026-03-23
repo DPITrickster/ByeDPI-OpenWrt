@@ -442,6 +442,24 @@ jobs:
           ls -la ./release_files/
           echo "==========================================="
 
+      - name: Generate release notes
+        run: |
+          {
+            echo "### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}"
+            echo ""
+            echo "-----"
+            echo "**Check the package architecture of your device:**"
+            echo '```shell'
+            if [ "${{ matrix.format }}" = "ipk" ]; then
+              echo "opkg print-architecture"
+              echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
+            else
+              echo "apk --print-arch"
+              echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
+            fi
+            echo '```'
+          } > release_notes.md
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -449,12 +467,5 @@ jobs:
           tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
           name: ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
           target_commitish: gh-pages
-          body: |
-            ### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
-
-            -----
-            Check the package architecture of your device using the command:
-            ```
-            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
-            ```
+          body_path: release_notes.md
           files: ./release_files/*
