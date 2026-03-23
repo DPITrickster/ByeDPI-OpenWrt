@@ -1,9 +1,9 @@
-name: Simple Build
+name: Repack Generic Binaries
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 1 */14 * *'
+    - cron: '0 0 */14 * *'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -28,8 +28,8 @@ jobs:
           TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/hufrea/byedpi/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
           echo "Latest upstream tag: $TAG"
 
-          if [ -f .last_simple_release_tag ]; then
-            LAST=$(cat .last_simple_release_tag)
+          if [ -f .last_generic_release_tag ]; then
+            LAST=$(cat .last_generic_release_tag)
           else
             LAST=""
           fi
@@ -191,9 +191,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "${{ steps.get_tag.outputs.tag }}" > .last_simple_release_tag
-          git add .last_simple_release_tag
-          git commit -m "Update simple-build release tag to ${{ steps.get_tag.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          echo "${{ steps.get_tag.outputs.tag }}" > .last_generic_release_tag
+          git rm -f .last_simple_release_tag || true
+          git add .last_generic_release_tag
+          git commit -m "Update generic-build release tag to ${{ steps.get_tag.outputs.tag }} [skip ci]" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref_name }}
 
       - name: Upload Artifacts
@@ -208,6 +209,45 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_tag.outputs.tag }}-generic
-          name: "ByeDPI ${{ steps.get_tag.outputs.tag }} (Generic OpenWrt Packages)"
+          name: "${{ steps.get_tag.outputs.tag }} for OpenWrt (Generic Packages)"
           files: packages/*
-          generate_release_notes: false
+          body: |
+            ## 🚧 Generic пакеты OpenWrt (резервный вариант)
+
+            Универсальные пакеты OpenWrt, собранные из готовых бинарников.
+
+            ⚠️ **Не через** OpenWrt SDK — совместимость не гарантируется.
+            Используйте, если нет нативных пакетов или **_если хотите помочь с тестированием_**.
+
+            🧪 Обратная связь
+
+            Если у вас работает — поставьте 👀
+
+            ---
+
+            ## 🚧 Generic OpenWrt Packages (Fallback)
+
+            Generic OpenWrt packages built from upstream binaries.
+
+            ⚠️ **Not built with** OpenWrt SDK — compatibility is not guaranteed.
+            Use if no native package is available or **_if you want to help test_**.
+
+            🧪 Feedback
+
+            If it works for you, please react with 👀
+
+            ---
+
+            ### Как узнать архитектуру (How to check architecture)
+
+            **OpenWrt <= 24.10 (opkg / .ipk):**
+            ```shell
+            opkg print-architecture
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            ```
+
+            **OpenWrt >= 25.12 (apk / .apk):**
+            ```shell
+            apk --print-arch
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            ```
