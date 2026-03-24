@@ -60,7 +60,7 @@ awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
 ---
 
 ## 3. Способы маршрутизации (Интеграция)
-- **Podkop:** (прокси-ядра и утилиты на их основе). Подробную инструкцию по быстрой настройке готовой связки читайте в [руководстве Podkop с ByeDPI](https://github.com/DPITrickster/Podkop-ByeDPI-OpenWRT).
+- Прокси-ядра и утилиты на их основе, например **Podkop**. Подробную инструкцию по настройке связки читайте в [руководстве Podkop с ByeDPI](https://github.com/DPITrickster/Podkop-ByeDPI-OpenWRT).
 - [**Раздел Обсуждений**](https://github.com/DPITrickster/ByeDPI-OpenWrt/discussions). Если вы ищете примеры настройки проксирования через redsocks/tun2proxy или хотите поделиться своим опытом, загляните в этот раздел.
 
 ---
