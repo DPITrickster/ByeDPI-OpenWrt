@@ -1,66 +1,153 @@
-permissions:
-  contents: write
-
 name: build
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force a build even if nothing changed upstream (rebuilds the current release)'
+        type: boolean
+        default: false
+      ref:
+        description: 'Build an arbitrary upstream ref (commit sha or tag) as a pre-release'
+        type: string
+        default: ''
   schedule:
     - cron: '0 0 */14 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # 1. Check upstream
+  # 1. Check upstream: pick build mode (release / prerelease / skip)
   check:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.get_tag.outputs.tag }}
+      mode:            ${{ steps.decide.outputs.mode }}
+      tag:             ${{ steps.decide.outputs.tag }}
+      tag_suffix:      ${{ steps.decide.outputs.tag_suffix }}
+      version:         ${{ steps.decide.outputs.version }}
+      source_ref:      ${{ steps.decide.outputs.source_ref }}
+      source_dir:      ${{ steps.decide.outputs.source_dir }}
+      prerelease:      ${{ steps.decide.outputs.prerelease }}
+      commit:          ${{ steps.decide.outputs.commit }}
+      short:           ${{ steps.decide.outputs.short }}
+      ipk_branches:    ${{ steps.decide.outputs.ipk_branches }}
+      apk_branches:    ${{ steps.decide.outputs.apk_branches }}
+      release_targets: ${{ steps.decide.outputs.release_targets }}
     steps:
-      - name: Checkout repository (to read .last_release_tag)
+      - name: Checkout repository (to read .last_release_tag / .last_commit)
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Get upstream latest release tag
-        id: get_tag
+      - name: Decide build mode
+        id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: 'hufrea/byedpi'
+          FORCE: ${{ github.event.inputs.force }}
+          REF_IN: ${{ github.event.inputs.ref }}
         run: |
-          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
-          echo "Latest upstream tag: $TAG"
+          # GitHub API call with up to 3 retries (handles transient network/API flaps)
+          api() {
+            local out
+            for _ in 1 2 3; do
+              out=$(wget -qO- --header="Authorization: token $GH_TOKEN" "$1") && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+              sleep 3
+            done
+            return 1
+          }
 
-          if [ -f .last_release_tag ]; then
-            LAST=$(cat .last_release_tag)
+          TAG=$(api "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
+          DEFAULT_BRANCH=$(api "https://api.github.com/repos/$REPO" | grep -Po '"default_branch": "\K.+?(?=")')
+          COMMIT=$(api "https://api.github.com/repos/$REPO/commits/$DEFAULT_BRANCH" | grep -Po '"sha": "\K[0-9a-f]+' | head -1)
+          SHORT=${COMMIT:0:7}
+          echo "Upstream latest release tag: $TAG"
+          echo "Upstream default branch '$DEFAULT_BRANCH' HEAD: $COMMIT"
+
+          if [ -z "$TAG" ] || [ -z "$COMMIT" ]; then
+            echo "::error::Could not query upstream tag/commit from GitHub API."
+            exit 1
+          fi
+
+          [ -f .last_release_tag ] && LAST_TAG=$(cat .last_release_tag) || LAST_TAG=""
+          [ -f .last_commit ]      && LAST_COMMIT=$(cat .last_commit)   || LAST_COMMIT=""
+          echo "Last processed tag:    $LAST_TAG"
+          echo "Last processed commit: $LAST_COMMIT"
+
+          # Defaults, refined below depending on the chosen mode.
+          MODE=SKIP PRERELEASE=false TAG_SUFFIX="" VERSION="${TAG#v}"
+          SOURCE_REF="$TAG" SOURCE_DIR="${TAG#v}"
+
+          if [ -n "$REF_IN" ]; then
+            # Manual dispatch: build an arbitrary ref as a pre-release (testing/debug).
+            echo "==> Manual ref requested: pre-release build from '$REF_IN'."
+            MODE=prerelease PRERELEASE=true
+            SOURCE_REF="$REF_IN" SOURCE_DIR="${REF_IN#v}"
+            SHORT="${REF_IN:0:7}" TAG_SUFFIX="-pre-${REF_IN:0:7}"
+          elif [ "$TAG" != "$LAST_TAG" ]; then
+            echo "==> New upstream release: full release build."
+            MODE=release
+          elif [ "$COMMIT" != "$LAST_COMMIT" ]; then
+            echo "==> Same version, new upstream commit: pre-release build from $SHORT."
+            MODE=prerelease PRERELEASE=true
+            SOURCE_REF="$COMMIT" SOURCE_DIR="$COMMIT" TAG_SUFFIX="-pre-$SHORT"
+          elif [ "$FORCE" = "true" ]; then
+            echo "==> Nothing changed but force requested: rebuilding current release."
+            MODE=release
           else
-            LAST=""
-          fi
-          echo "Last processed tag: $LAST"
-
-          if [ "$TAG" = "$LAST" ]; then
-            echo "tag=SKIP" >> $GITHUB_OUTPUT
-            echo "No new release. Skipping build."
-            exit 0
+            echo "==> Nothing changed: skipping build."
           fi
 
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          {
+            echo "mode=$MODE"
+            echo "prerelease=$PRERELEASE"
+            echo "tag_suffix=$TAG_SUFFIX"
+            echo "version=$VERSION"
+            echo "source_ref=$SOURCE_REF"
+            echo "source_dir=$SOURCE_DIR"
+            echo "tag=$TAG"
+            echo "commit=$COMMIT"
+            echo "short=$SHORT"
+          } >> "$GITHUB_OUTPUT"
 
-  # 2. IPK build
+          # Dynamic build/release matrices: full set for releases, trimmed for pre-releases.
+          if [ "$MODE" = "release" ]; then
+            {
+              echo 'ipk_branches=["openwrt-19.07","openwrt-21.02","openwrt-22.03","openwrt-23.05","openwrt-24.10"]'
+              echo 'apk_branches=["openwrt-25.12"]'
+              echo 'release_targets=[{"branch":"19.07","format":"ipk"},{"branch":"21.02","format":"ipk"},{"branch":"22.03","format":"ipk"},{"branch":"23.05","format":"ipk"},{"branch":"24.10","format":"ipk"},{"branch":"25.12","format":"apk"}]'
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$MODE" = "prerelease" ]; then
+            {
+              echo 'ipk_branches=["openwrt-24.10"]'
+              echo 'apk_branches=["openwrt-25.12"]'
+              echo 'release_targets=[{"branch":"24.10","format":"ipk"},{"branch":"25.12","format":"apk"}]'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'ipk_branches=[]'
+              echo 'apk_branches=[]'
+              echo 'release_targets=[]'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+  # 2. IPK build (OpenWrt <= 24.10)
   build-ipk:
     needs: check
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    if: ${{ needs.check.outputs.mode != 'SKIP' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - openwrt-19.07
-          - openwrt-21.02
-          - openwrt-22.03
-          - openwrt-23.05
-          - openwrt-24.10
+        branch: ${{ fromJSON(needs.check.outputs.ipk_branches) }}
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
@@ -107,7 +194,9 @@ jobs:
       options: --user root
     defaults: { run: { shell: bash } }
     env:
-      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+      VERSION:    ${{ needs.check.outputs.version }}
+      SOURCE_REF: ${{ needs.check.outputs.source_ref }}
+      SOURCE_DIR: ${{ needs.check.outputs.source_dir }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -125,12 +214,15 @@ jobs:
             HOME=/builder ./setup.sh
           fi
 
-
-      - name: Prepare package (set version)
+      - name: Prepare package (set version and source ref)
         run: |
-          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
+          sed -e "s|@VERSION@|${VERSION}|" \
+              -e "s|@SOURCE_REF@|${SOURCE_REF}|" \
+              -e "s|@SOURCE_DIR@|${SOURCE_DIR}|" -i byedpi/Makefile
+          echo "----- byedpi/Makefile (header) -----"
+          sed -n '1,20p' byedpi/Makefile
 
-      - name: Compile package
+      - name: Compile package and build feed index
         id: compile
         working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
         env:
@@ -144,7 +236,32 @@ jobs:
           make defconfig
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
           echo "$SIGN_KEY" | base64 -d > key-build
-          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar \
+
+          WORK=$(pwd)
+          PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
+          if [ -z "$PKG_DIR" ]; then
+            echo "::error::Built package directory not found."
+            find ./bin -name 'byedpi*.ipk' | head
+            exit 1
+          fi
+          echo "Package dir: $PKG_DIR"
+
+          # Generate an opkg feed index next to the .ipk files (served as-is on gh-pages)
+          (
+            cd "$PKG_DIR"
+            "$WORK/scripts/ipkg-make-index.sh" . > Packages.manifest
+            grep -vE '^(Maintainer|LicenseFiles|Source|SourceName|Require|SourceDateEpoch):' Packages.manifest > Packages || cp Packages.manifest Packages
+            rm -f Packages.manifest
+            gzip -9nc Packages > Packages.gz
+            if [ -s "$WORK/key-build" ] && [ -x "$WORK/staging_dir/host/bin/usign" ]; then
+              "$WORK/staging_dir/host/bin/usign" -S -m Packages -s "$WORK/key-build" || echo "usign signing skipped"
+            fi
+            if [ -x "$WORK/scripts/make-index-json.py" ]; then
+              "$WORK/scripts/make-index-json.py" -f opkg -a "$ARCH" Packages > index.json || echo "index.json generation skipped"
+            fi
+          )
+
+          tar -C "$PKG_DIR" -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar \
             --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
       - name: Compress build logs
@@ -175,18 +292,16 @@ jobs:
           path: logs-ipk-*.tar.xz
           if-no-files-found: ignore
 
-  # 3. APK build
+  # 3. APK build (OpenWrt >= 25.12)
   build-apk:
     needs: check
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    if: ${{ needs.check.outputs.mode != 'SKIP' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - openwrt-25.12
-          # for new branch add line:
-          # - openwrt-26.01
+        # apk_branches is ["openwrt-25.12"] today; add new apk branches in the check job.
+        branch: ${{ fromJSON(needs.check.outputs.apk_branches) }}
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
@@ -225,7 +340,9 @@ jobs:
       run:
         shell: bash
     env:
-      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+      VERSION:    ${{ needs.check.outputs.version }}
+      SOURCE_REF: ${{ needs.check.outputs.source_ref }}
+      SOURCE_DIR: ${{ needs.check.outputs.source_dir }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -244,11 +361,15 @@ jobs:
           sed -r -i 's/^rm.+//' setup.sh
           ./setup.sh
 
-      - name: Prepare package (set version)
+      - name: Prepare package (set version and source ref)
         run: |
-          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
+          sed -e "s|@VERSION@|${VERSION}|" \
+              -e "s|@SOURCE_REF@|${SOURCE_REF}|" \
+              -e "s|@SOURCE_DIR@|${SOURCE_DIR}|" -i byedpi/Makefile
+          echo "----- byedpi/Makefile (header) -----"
+          sed -n '1,20p' byedpi/Makefile
 
-      - name: Compile package
+      - name: Compile package and build feed index
         id: compile
         working-directory: /builder
         env:
@@ -268,17 +389,27 @@ jobs:
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
 
-          mkdir -p /tmp/apk-collection
-          find ./bin -name "byedpi*.apk" -type f -exec cp {} /tmp/apk-collection/ \;
-
-          if [ -z "$(ls -A /tmp/apk-collection)" ]; then
-            echo "ERROR: No APK files found for $ARCH"
+          WORK=$(pwd)
+          PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
+          if [ -z "$PKG_DIR" ] || ! compgen -G "$PKG_DIR/*.apk" > /dev/null; then
+            echo "::error::No APK files found for $ARCH"
             find ./bin -type f -name "*.apk" | head -5
             exit 1
           fi
+          echo "Package dir: $PKG_DIR"
 
-          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-$BRANCH-$ARCH.tar \
-            --transform "s|^|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+          # Generate an apk feed index next to the .apk files (served as-is on gh-pages)
+          (
+            cd "$PKG_DIR"
+            "$WORK/staging_dir/host/bin/apk" mkndx --allow-untrusted --output packages.adb *.apk || echo "apk mkndx skipped"
+            if [ -f packages.adb ] && [ -x "$WORK/scripts/make-index-json.py" ]; then
+              "$WORK/staging_dir/host/bin/apk" adbdump --format json packages.adb \
+                | "$WORK/scripts/make-index-json.py" -f apk -a "$ARCH" - > index.json || echo "index.json generation skipped"
+            fi
+          )
+
+          tar -C "$PKG_DIR" -cvf $GITHUB_WORKSPACE/apk-$BRANCH-$ARCH.tar \
+            --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
       - name: Compress build logs
         if: always()
@@ -307,10 +438,10 @@ jobs:
           path: logs-apk-*.tar.xz
           if-no-files-found: ignore
 
-  # 4. Deploy to GitHub Pages
+  # 4. Deploy to GitHub Pages (stable feed) — releases only, never pre-releases
   gh-pages:
     needs: [check, build-ipk, build-apk]
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    if: ${{ needs.check.outputs.mode == 'release' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -347,44 +478,20 @@ jobs:
           force_orphan: true
           publish_dir: ./public
 
-      - name: Checkout repo to update last tag
-        if: ${{ success() }}
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Update .last_release_tag
-        if: ${{ success() }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "${{ needs.check.outputs.tag }}" > .last_release_tag
-          git add .last_release_tag
-          git commit -m "Update last_release_tag to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:${{ github.ref_name }}
-
-  # 5. Release
+  # 5. Release (full release or pre-release)
   release:
-    needs: [check, build-ipk, build-apk, gh-pages]
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    needs: [check, build-ipk, build-apk]
+    if: ${{ needs.check.outputs.mode != 'SKIP' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
     strategy:
       max-parallel: 1
       matrix:
-        # Each entry is a separate release.
-        # format: ipk  -> OpenWrt <= 24.10
-        # format: apk  -> OpenWrt >= 25.12
-        include:
-          - { branch: '19.07', format: ipk }
-          - { branch: '21.02', format: ipk }
-          - { branch: '22.03', format: ipk }
-          - { branch: '23.05', format: ipk }
-          - { branch: '24.10', format: ipk }
-          - { branch: '25.12', format: apk }
-          # - { branch: '26.01', format: apk }
+        # Each entry is a separate release: {branch, format}.
+        # format: ipk -> OpenWrt <= 24.10 ; apk -> OpenWrt >= 25.12.
+        # Built dynamically by the check job (full set for releases, trimmed for pre-releases).
+        include: ${{ fromJSON(needs.check.outputs.release_targets) }}
     steps:
       - name: Download IPK artifacts for OpenWrt ${{ matrix.branch }}
         if: ${{ matrix.format == 'ipk' }}
@@ -443,20 +550,35 @@ jobs:
           echo "==========================================="
 
       - name: Generate release notes
+        env:
+          MODE: ${{ needs.check.outputs.mode }}
+          SHORT: ${{ needs.check.outputs.short }}
+          FORMAT: ${{ matrix.format }}
+          BRANCH: ${{ matrix.branch }}
+          TAG: ${{ needs.check.outputs.tag }}
         run: |
           {
-            echo "### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}"
+            if [ "$MODE" = "prerelease" ]; then
+              echo "### 🧪 ByeDPI $TAG (pre-release) for OpenWrt $BRANCH"
+              echo ""
+              echo "> Сборка из коммита \`$SHORT\` ветки upstream. Номер версии не менялся,"
+              echo "> но код обновился — это **тестовый пред-релиз**, не входит в стабильный фид."
+              echo ">"
+              echo "> Built from upstream commit \`$SHORT\`. The version number did not change"
+              echo "> but the code did — this is a **test pre-release**, not part of the stable feed."
+            else
+              echo "### ByeDPI $TAG for OpenWrt $BRANCH"
+            fi
             echo ""
             echo "-----"
             echo "**Check the package architecture of your device:**"
             echo '```shell'
-            if [ "${{ matrix.format }}" = "ipk" ]; then
+            if [ "$FORMAT" = "ipk" ]; then
               echo "opkg print-architecture"
-              echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
             else
               echo "apk --print-arch"
-              echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
             fi
+            echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
             echo '```'
           } > release_notes.md
 
@@ -464,8 +586,47 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
-          tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
-          name: ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+          tag_name: ${{ needs.check.outputs.tag }}${{ needs.check.outputs.tag_suffix }}-${{ matrix.branch }}
+          name: ${{ needs.check.outputs.tag }}${{ needs.check.outputs.tag_suffix }} for OpenWrt ${{ matrix.branch }}
           target_commitish: gh-pages
           body_path: release_notes.md
           files: ./release_files/*
+
+  # 6. Record what we processed so the next run can skip / decide correctly.
+  #    Runs for both release and pre-release; gh-pages is skipped for pre-releases.
+  finalize:
+    needs: [check, build-ipk, build-apk, gh-pages, release]
+    if: >-
+      ${{ always()
+          && needs.check.outputs.mode != 'SKIP'
+          && needs.build-ipk.result == 'success'
+          && needs.build-apk.result == 'success'
+          && needs.release.result == 'success'
+          && (needs.gh-pages.result == 'success' || needs.gh-pages.result == 'skipped') }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Update tracking files
+        env:
+          MODE: ${{ needs.check.outputs.mode }}
+          TAG: ${{ needs.check.outputs.tag }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+          SHORT: ${{ needs.check.outputs.short }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "$COMMIT" > .last_commit
+          if [ "$MODE" = "release" ]; then
+            echo "$TAG" > .last_release_tag
+          fi
+          git add .last_commit .last_release_tag
+          git commit -m "Track upstream $TAG @ $SHORT [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
