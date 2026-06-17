@@ -1,0 +1,39 @@
+name: lint
+
+on:
+  push:
+    paths:
+      - '.github/**'
+  pull_request:
+    paths:
+      - '.github/**'
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+
+      - name: Run actionlint
+        run: |
+          # actionlint auto-discovers .github/workflows/*.yml and uses shellcheck
+          # (in PATH) to lint inline run: scripts.
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+      - name: Shellcheck standalone scripts
+        run: |
+          if ls .github/*.sh >/dev/null 2>&1; then
+            shellcheck .github/*.sh
+          else
+            echo "No standalone .sh scripts to check."
+          fi
