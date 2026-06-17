@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned in the workflows up to date on `main`.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+
+  # Dependabot reads this config only from the default branch, so the `generic`
+  # branch is covered here via target-branch.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: generic
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
