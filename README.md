@@ -63,13 +63,13 @@ opkg install byedpi
 ```shell
 ARCH=$(awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release)
 VER=25.12
-apk add --repository "https://dpitrickster.github.io/ByeDPI-OpenWrt/$VER/$ARCH" byedpi
+apk add --allow-untrusted --repository "https://dpitrickster.github.io/ByeDPI-OpenWrt/$VER/$ARCH" byedpi
 ```
 
 > [!NOTE]
-> Публичный ключ для проверки подписи фида лежит по адресу
-> `https://dpitrickster.github.io/ByeDPI-OpenWrt/public.key`. Если менеджер пакетов жалуется
-> на подпись, импортируйте ключ (`opkg`: положите его в `/etc/opkg/keys/`; `apk`: `--allow-untrusted`).
+> Фид **не подписан**. Для `apk` используйте `--allow-untrusted` (как в команде выше).
+> Если `opkg` ругается на отсутствие подписи — добавьте `option check_signature 0`
+> в `/etc/opkg.conf`.
 
 > [!TIP]
 > Помимо стабильных релизов публикуются **пред-релизы** (`prerelease`, тег вида
