@@ -248,13 +248,22 @@ jobs:
           ./scripts/feeds install -a -p byedpi
           make defconfig
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
-          echo "$SIGN_KEY" | base64 -d > key-build
 
-          # Build a proper opkg feed index (Packages, Packages.gz, and a usign
-          # signature when a key is configured) via the SDK's own target. Running
-          # it through make sets up the host PATH/mkhash, so hashing works — a
-          # manual ipkg-make-index.sh call fails with "sha256: command not found".
-          make package/index V=s
+          # Feed-index signing. The SDK enables CONFIG_SIGNED_PACKAGES by default,
+          # so `make package/index` always tries to usign-sign the index. Sign only
+          # when a private key is provided via the SIGN_PRIVATE_KEY secret; with no
+          # key, disable signing so an unsigned index is produced instead of failing
+          # ("Signing package index... Premature end of file" on an empty key-build).
+          if [ -n "$SIGN_KEY" ]; then
+            echo "$SIGN_KEY" | base64 -d > key-build
+          else
+            sed -i 's/^CONFIG_SIGNED_PACKAGES=y/# CONFIG_SIGNED_PACKAGES is not set/' .config 2>/dev/null || true
+          fi
+
+          # Build the opkg feed index (Packages, Packages.gz, signature when enabled)
+          # via the SDK's own target — make sets up the host PATH/mkhash so hashing
+          # works (a manual ipkg-make-index.sh call fails: "sha256: command not found").
+          make package/index V=s || echo "::warning::feed index generation failed; packages are still published without an index"
 
           PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
           if [ -z "$PKG_DIR" ]; then
@@ -390,10 +399,12 @@ jobs:
 
           if [ -n "$SIGN_KEY" ]; then
             echo "$SIGN_KEY" | base64 -d > key-build
+          else
+            sed -i 's/^CONFIG_SIGNED_PACKAGES=y/# CONFIG_SIGNED_PACKAGES is not set/' .config 2>/dev/null || true
           fi
 
           # Build the apk feed index via the SDK's own target (sets up host PATH/tools).
-          make package/index V=s
+          make package/index V=s || echo "::warning::feed index generation failed; packages are still published without an index"
 
           PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
           if [ -z "$PKG_DIR" ] || ! compgen -G "$PKG_DIR/*.apk" > /dev/null; then
