@@ -44,6 +44,39 @@ apk --print-arch
 awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
 ```
 
+### Подключение репозитория (фид)
+
+Помимо разовой загрузки `.ipk`/`.apk`, релизы публикуются как готовый фид на GitHub Pages —
+тогда установка и обновления идут штатным менеджером пакетов. Подставьте версию OpenWrt и
+архитектуру вашего устройства.
+
+**Для OpenWrt <= 24.10 (`opkg`):**
+```shell
+ARCH=$(awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release)
+VER=24.10   # ветка вашего OpenWrt
+echo "src/gz byedpi https://dpitrickster.github.io/ByeDPI-OpenWrt/$VER/$ARCH" >> /etc/opkg/customfeeds.conf
+opkg update
+opkg install byedpi
+```
+
+**Для OpenWrt >= 25.12 (`apk`):**
+```shell
+ARCH=$(awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release)
+VER=25.12
+apk add --repository "https://dpitrickster.github.io/ByeDPI-OpenWrt/$VER/$ARCH" byedpi
+```
+
+> [!NOTE]
+> Публичный ключ для проверки подписи фида лежит по адресу
+> `https://dpitrickster.github.io/ByeDPI-OpenWrt/public.key`. Если менеджер пакетов жалуется
+> на подпись, импортируйте ключ (`opkg`: положите его в `/etc/opkg/keys/`; `apk`: `--allow-untrusted`).
+
+> [!TIP]
+> Помимо стабильных релизов публикуются **пред-релизы** (`prerelease`, тег вида
+> `v0.17.3-pre-<хэш>-<версия>`). Они собираются, когда в upstream-проекте появились новые коммиты,
+> но номер версии ещё не подняли. Это сборки для тестирования — в стабильный фид они **не** попадают,
+> ставить их стоит только вручную со страницы релизов.
+
 ---
 
 ## 2. Настройка и запуск
