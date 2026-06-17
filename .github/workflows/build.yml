@@ -241,7 +241,6 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
-          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
           echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
           ./scripts/feeds update byedpi
@@ -249,20 +248,14 @@ jobs:
           make defconfig
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
 
-          # Feed-index signing. The SDK enables CONFIG_SIGNED_PACKAGES by default,
-          # so `make package/index` always tries to usign-sign the index. Sign only
-          # when a private key is provided via the SIGN_PRIVATE_KEY secret; with no
-          # key, disable signing so an unsigned index is produced instead of failing
-          # ("Signing package index... Premature end of file" on an empty key-build).
-          if [ -n "$SIGN_KEY" ]; then
-            echo "$SIGN_KEY" | base64 -d > key-build
-          else
-            sed -i 's/^CONFIG_SIGNED_PACKAGES=y/# CONFIG_SIGNED_PACKAGES is not set/' .config 2>/dev/null || true
-          fi
+          # No package signing — this is an unsigned community feed. The SDK turns
+          # CONFIG_SIGNED_PACKAGES on by default, so disable it to stop
+          # `make package/index` from trying to usign-sign the index.
+          sed -i 's/^CONFIG_SIGNED_PACKAGES=y/# CONFIG_SIGNED_PACKAGES is not set/' .config 2>/dev/null || true
 
-          # Build the opkg feed index (Packages, Packages.gz, signature when enabled)
-          # via the SDK's own target — make sets up the host PATH/mkhash so hashing
-          # works (a manual ipkg-make-index.sh call fails: "sha256: command not found").
+          # Build the opkg feed index (Packages, Packages.gz) via the SDK's own target —
+          # make sets up the host PATH/mkhash so hashing works (a manual
+          # ipkg-make-index.sh call fails: "sha256: command not found").
           make package/index V=s || echo "::warning::feed index generation failed; packages are still published without an index"
 
           PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
@@ -387,7 +380,6 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
-          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
           echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
           ./scripts/feeds update byedpi
@@ -397,11 +389,8 @@ jobs:
           sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config 2>/dev/null || true
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
 
-          if [ -n "$SIGN_KEY" ]; then
-            echo "$SIGN_KEY" | base64 -d > key-build
-          else
-            sed -i 's/^CONFIG_SIGNED_PACKAGES=y/# CONFIG_SIGNED_PACKAGES is not set/' .config 2>/dev/null || true
-          fi
+          # No package signing — unsigned community feed (see the ipk job).
+          sed -i 's/^CONFIG_SIGNED_PACKAGES=y/# CONFIG_SIGNED_PACKAGES is not set/' .config 2>/dev/null || true
 
           # Build the apk feed index via the SDK's own target (sets up host PATH/tools).
           make package/index V=s || echo "::warning::feed index generation failed; packages are still published without an index"
@@ -469,10 +458,6 @@ jobs:
           mkdir -p public
           find ./artifacts -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
           find ./artifacts -name 'apk-*.tar' -exec tar -C ./public -xvf {} \;
-          cat <<EOF >> public/public.key
-          untrusted comment: ByeDPI OpenWrt repo
-          RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
-          EOF
 
       - name: Deploy to GH pages
         uses: peaceiris/actions-gh-pages@v4
