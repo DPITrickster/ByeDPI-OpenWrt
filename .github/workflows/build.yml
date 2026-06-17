@@ -2,6 +2,11 @@ name: Repack Generic Binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force a rebuild of the current upstream release, ignoring .last_generic_release_tag'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 0 */14 * *'
 
@@ -9,11 +14,20 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-and-release:
+  # 1. Check upstream release vs last processed generic tag
+  check:
     runs-on: ubuntu-latest
+    outputs:
+      skip:    ${{ steps.get_tag.outputs.skip }}
+      tag:     ${{ steps.get_tag.outputs.tag }}
+      version: ${{ steps.get_tag.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -24,8 +38,18 @@ jobs:
         id: get_tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ github.event.inputs.force }}
         run: |
-          TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/hufrea/byedpi/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
+          api() {
+            local out
+            for _ in 1 2 3; do
+              out=$(wget -qO- --header="Authorization: token $GH_TOKEN" "$1") && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+              sleep 3
+            done
+            return 1
+          }
+
+          TAG=$(api https://api.github.com/repos/hufrea/byedpi/releases/latest | grep -Po '"tag_name": "\K.+?(?=")')
           echo "Latest upstream tag: $TAG"
 
           if [ -f .last_generic_release_tag ]; then
@@ -35,182 +59,219 @@ jobs:
           fi
           echo "Last processed tag: $LAST"
 
-          if [ "$TAG" = "$LAST" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not query upstream tag."
+            exit 1
+          fi
+
+          if [ "$TAG" = "$LAST" ] && [ "$FORCE" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "No new release. Skipping build."
+          else
+            [ "$TAG" = "$LAST" ] && echo "Force requested — rebuilding $TAG."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # 2. Build packaging tools once (apk-tools + ipkg-build), cached across runs
+  prepare-tools:
+    needs: check
+    if: ${{ needs.check.outputs.skip == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cache packaging tools
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: tools-out
+          key: byedpi-tools-apk-b5a31c0-ipkgbuild-v1
+
+      - name: Build apk-tools + fetch ipkg-build
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq
+          sudo -E apt-get install -y build-essential libssl-dev meson ninja-build
+
+          git clone https://git.alpinelinux.org/apk-tools apk-tools-src
+          pushd apk-tools-src
+          git checkout b5a31c0d865342ad80be10d68f1bb3d3ad9b0866
+          meson setup build \
+            -Db_lto=true \
+            -Dcompressed-help=false \
+            -Ddocs=disabled \
+            -Dhelp=disabled \
+            -Dlua_version=disabled \
+            -Ddefault_library=static \
+            -Durl_backend=wget \
+            -Dzstd=false \
+            -Dpython=disabled \
+            -Dtests=disabled \
+            -Dcrypto_backend=openssl
+          ninja -C build
+          popd
+
+          mkdir -p tools-out
+          APK_BIN=$(find apk-tools-src/build -name apk -type f -executable | head -1)
+          if [ -z "$APK_BIN" ]; then
+            echo "::error::apk binary not found after build."
+            exit 1
+          fi
+          install -m755 "$APK_BIN" tools-out/apk
+          curl -fsSL "https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build" -o tools-out/ipkg-build
+          chmod +x tools-out/ipkg-build
+
+      - name: Upload packaging tools
+        uses: actions/upload-artifact@v6
+        with:
+          name: byedpi-tools
+          path: tools-out/
+          if-no-files-found: error
+
+  # 3. Repack one upstream binary into many OpenWrt-arch packages
+  build:
+    needs: [check, prepare-tools]
+    if: ${{ needs.check.outputs.skip == 'false' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - hufrea_arch: aarch64
+            openwrt_arches: aarch64_cortex-a53 aarch64_cortex-a72 aarch64_cortex-a76 aarch64_generic
+          - hufrea_arch: armv7l
+            openwrt_arches: arm_cortex-a5_vfpv4 arm_cortex-a7 arm_cortex-a7_neon-vfpv4 arm_cortex-a7_vfpv4 arm_cortex-a8_vfpv3 arm_cortex-a9 arm_cortex-a9_neon arm_cortex-a9_vfpv3-d16 arm_cortex-a15_neon-vfpv4 arm_fa526 arm_mpcore arm_xscale
+          - hufrea_arch: armv6
+            openwrt_arches: arm_arm1176jzf-s_vfp arm_arm926ej-s
+          - hufrea_arch: mips
+            openwrt_arches: mips64_octeonplus mips_24kc mips_4kec mips_mips32
+          - hufrea_arch: mipsel
+            openwrt_arches: mipsel_24kc mipsel_24kc_24kf mipsel_74kc mipsel_mips32
+          - hufrea_arch: x86_64
+            openwrt_arches: x86_64
+          - hufrea_arch: i686
+            openwrt_arches: i386_pentium4
+          - hufrea_arch: powerpc
+            openwrt_arches: powerpc_464fp powerpc_8540
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download prebuilt packaging tools
+        uses: actions/download-artifact@v6
+        with:
+          name: byedpi-tools
+          path: tools
+
+      - name: Install packaging tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq
+          sudo -E apt-get install -y fakeroot
+          sudo install -m755 tools/apk /usr/local/bin/apk
+          sudo install -m755 tools/ipkg-build /usr/local/bin/ipkg-build
+
+      - name: Download upstream binary
+        id: download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check.outputs.tag }}
+          HUFREA_ARCH: ${{ matrix.hufrea_arch }}
+        run: |
+          # GitHub API call with up to 3 retries.
+          api() {
+            local out
+            for _ in 1 2 3; do
+              out=$(wget -qO- --header="Authorization: token $GH_TOKEN" "$1") && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+              sleep 3
+            done
+            return 1
+          }
+
+          # Resolve the exact asset URL from the release JSON — robust to any
+          # version-in-filename convention upstream may use.
+          api "https://api.github.com/repos/hufrea/byedpi/releases/tags/${TAG}" > release.json
+          url=$(grep -oP "\"browser_download_url\": \"\K[^\"]*${HUFREA_ARCH}\.tar\.gz(?=\")" release.json | head -1)
+
+          if [ -z "$url" ]; then
+            echo "No upstream asset for arch '$HUFREA_ARCH' in $TAG — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "skip=false" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - name: Setup nFPM
-        if: steps.get_tag.outputs.skip == 'false'
-        run: |
-          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
-          sudo apt-get update
-          sudo apt-get install -y nfpm
-
-      - name: Download binaries and build packages
-        if: steps.get_tag.outputs.skip == 'false'
-        env:
-          TAG: ${{ steps.get_tag.outputs.tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION=${TAG#v}
-          
-          # Map OpenWRT architectures to ByeDPI pre-built generic architectures
-          declare -A arch_map=(
-            ["aarch64_cortex-a53"]="aarch64"
-            ["aarch64_cortex-a72"]="aarch64"
-            ["aarch64_cortex-a76"]="aarch64"
-            ["aarch64_generic"]="aarch64"
-            ["arm_arm1176jzf-s_vfp"]="armv6"
-            ["arm_arm926ej-s"]="armv6"
-            ["arm_cortex-a15_neon-vfpv4"]="armv7l"
-            ["arm_cortex-a5_vfpv4"]="armv7l"
-            ["arm_cortex-a7"]="armv7l"
-            ["arm_cortex-a7_neon-vfpv4"]="armv7l"
-            ["arm_cortex-a7_vfpv4"]="armv7l"
-            ["arm_cortex-a8_vfpv3"]="armv7l"
-            ["arm_cortex-a9"]="armv7l"
-            ["arm_cortex-a9_neon"]="armv7l"
-            ["arm_cortex-a9_vfpv3-d16"]="armv7l"
-            ["arm_fa526"]="armv7l"
-            ["arm_mpcore"]="armv7l"
-            ["arm_xscale"]="armv7l"
-            ["mips64_octeonplus"]="mips"
-            ["mips_24kc"]="mips"
-            ["mips_4kec"]="mips"
-            ["mips_mips32"]="mips"
-            ["mipsel_24kc"]="mipsel"
-            ["mipsel_24kc_24kf"]="mipsel"
-            ["mipsel_74kc"]="mipsel"
-            ["mipsel_mips32"]="mipsel"
-            ["x86_64"]="x86_64"
-            ["i386_pentium4"]="i686"
-            ["powerpc_464fp"]="powerpc"
-            ["powerpc_8540"]="powerpc"
-          )
-
-          mkdir -p packages
-
-          # Retrieve unique generics to minimize downloads
-          unique_generics=$(printf "%s\n" "${arch_map[@]}" | sort -u)
-
-          # Fetch release json once to get precise asset URLs
-          wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/hufrea/byedpi/releases/tags/${TAG}" > release_data.json
-
-          for gen_arch in $unique_generics; do
-            echo "Downloading generic arch: $gen_arch ..."
-            # Use grep with PCRE to extract the exact url regardless of version numbering
-            url=$(grep -oP "\"browser_download_url\": \"\K.*${gen_arch}\.tar\.gz(?=\")" release_data.json | head -n 1)
-            
-            if [ -n "$url" ]; then
-              echo "Found URL: $url"
-              if wget -q "$url" -O "byedpi-${gen_arch}.tar.gz"; then
-                mkdir -p "bin_${gen_arch}"
-                tar -xzf "byedpi-${gen_arch}.tar.gz" -C "bin_${gen_arch}"
-                echo "Extracted contents for $gen_arch:"
-                find "bin_${gen_arch}"
-              else
-                echo "Warning: Download failed from $url. Skipping..."
-              fi
-            else
-              echo "Warning: Release asset for $gen_arch not found. Skipping..."
-            fi
+          echo "Found URL: $url"
+          for _ in 1 2 3; do
+            wget -q "$url" -O binary.tar.gz && break
+            sleep 3
           done
+          tar xzf binary.tar.gz
+          BINARY=$(find . -name 'ciadpi*' -type f | head -1)
+          if [ -z "$BINARY" ]; then
+            echo "::error::ciadpi binary not found in archive for $HUFREA_ARCH"
+            tar tzf binary.tar.gz
+            exit 1
+          fi
+          chmod +x "$BINARY"
+          mv "$BINARY" ./ciadpi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-          # Build for explicit OpenWrt architectures
-          for ow_arch in "${!arch_map[@]}"; do
-            gen_arch=${arch_map[$ow_arch]}
-            
-            if [ ! -d "bin_${gen_arch}" ]; then
-              echo "Skipping $ow_arch because generic arch $gen_arch failed to download."
-              continue
-            fi
-
-            ciadpi_path=$(find "bin_${gen_arch}" -name "ciadpi*" -type f | head -n 1 || true)
-            if [ -z "$ciadpi_path" ]; then
-              echo "Skipping $ow_arch because ciadpi binary was not found in archive."
-              continue
-            fi
-            echo "Building $ow_arch using binary $ciadpi_path"
-
-            cp "$ciadpi_path" ./ciadpi
-
-            export ARCH=$ow_arch
-            export VERSION=$VERSION
-            
-            # Dynamic generation of nfpm config for this layout
-            cat << 'EOF' > nfpm.yaml
-          name: byedpi
-          arch: "${ARCH}"
-          platform: linux
-          version: "${VERSION}"
-          section: net
-          priority: optional
-          maintainer: "github-actions[bot]"
-          description: "ByeDPI - Bypass DPI"
-          homepage: "https://github.com/hufrea/byedpi"
-          vendor: "hufrea"
-          contents:
-            - src: ./ciadpi
-              dst: /usr/bin/ciadpi
-              file_info:
-                mode: 0755
-          EOF
-
-            # Append user's static config/init files if they exist in repo
-            if [ -f "byedpi/files/byedpi.init" ]; then
-              cat << 'EOF' >> nfpm.yaml
-            - src: ./byedpi/files/byedpi.init
-              dst: /etc/init.d/byedpi
-              file_info:
-                mode: 0755
-          EOF
-            fi
-            if [ -f "byedpi/files/byedpi.config" ]; then
-              cat << 'EOF' >> nfpm.yaml
-            - src: ./byedpi/files/byedpi.config
-              dst: /etc/config/byedpi
-              file_info:
-                mode: 0644
-          EOF
-            fi
-
-            nfpm pkg --packager ipk --target "packages/byedpi_${VERSION}_${ow_arch}.ipk"
-            nfpm pkg --packager apk --target "packages/byedpi_${VERSION}_${ow_arch}.apk"
-            
-            # Cleanup temp config
-            rm -f nfpm.yaml ./ciadpi
-          done
-
-      - name: Update last release tag
-        if: steps.get_tag.outputs.skip == 'false'
+      - name: Setup APK signing key
+        if: ${{ steps.download.outputs.skip == 'false' }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "${{ steps.get_tag.outputs.tag }}" > .last_generic_release_tag
-          git rm -f .last_simple_release_tag || true
-          git add .last_generic_release_tag
-          git commit -m "Update generic-build release tag to ${{ steps.get_tag.outputs.tag }} [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:${{ github.ref_name }}
+          if [ -n "${{ secrets.SIGN_PRIVATE_KEY }}" ]; then
+            echo "${{ secrets.SIGN_PRIVATE_KEY }}" > /tmp/sign.key
+            chmod 600 /tmp/sign.key
+            echo "APK_SIGN_KEY=/tmp/sign.key" >> "$GITHUB_ENV"
+          fi
 
-      - name: Upload Artifacts
+      - name: Build packages
+        if: ${{ steps.download.outputs.skip == 'false' }}
+        run: |
+          bash .github/build-byedpi.sh \
+            "${{ needs.check.outputs.version }}" \
+            "./ciadpi" \
+            "${{ matrix.openwrt_arches }}"
+
+      - name: Upload artifacts
+        if: ${{ steps.download.outputs.skip == 'false' }}
         uses: actions/upload-artifact@v6
-        if: steps.get_tag.outputs.skip == 'false'
         with:
-          name: byedpi-packages
-          path: packages/*
+          name: packages-${{ matrix.hufrea_arch }}
+          path: .github/out/
+          if-no-files-found: error
+
+  # 4. Publish the generic packages as a fallback release
+  release:
+    needs: [check, build]
+    if: ${{ needs.check.outputs.skip == 'false' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (to update tracking tag)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: packages/
 
       - name: Create GitHub Release
-        if: steps.get_tag.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.get_tag.outputs.tag }}-generic
-          name: "${{ steps.get_tag.outputs.tag }} for OpenWrt (Generic Packages)"
-          files: packages/*
+          tag_name: ${{ needs.check.outputs.tag }}-generic
+          name: "${{ needs.check.outputs.tag }} for OpenWrt (Generic Packages)"
+          files: |
+            packages/*.ipk
+            packages/*.apk
           body: |
             ## 🚧 Generic пакеты OpenWrt (резервный вариант)
 
@@ -251,3 +312,12 @@ jobs:
             apk --print-arch
             awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
+
+      - name: Update last generic release tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "${{ needs.check.outputs.tag }}" > .last_generic_release_tag
+          git add .last_generic_release_tag
+          git commit -m "Update generic-build release tag to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
