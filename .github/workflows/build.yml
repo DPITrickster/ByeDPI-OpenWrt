@@ -38,6 +38,7 @@ jobs:
       prerelease:      ${{ steps.decide.outputs.prerelease }}
       commit:          ${{ steps.decide.outputs.commit }}
       short:           ${{ steps.decide.outputs.short }}
+      bootstrap:       ${{ steps.decide.outputs.bootstrap }}
       ipk_branches:    ${{ steps.decide.outputs.ipk_branches }}
       apk_branches:    ${{ steps.decide.outputs.apk_branches }}
       release_targets: ${{ steps.decide.outputs.release_targets }}
@@ -78,7 +79,18 @@ jobs:
           fi
 
           [ -f .last_release_tag ] && LAST_TAG=$(cat .last_release_tag) || LAST_TAG=""
-          [ -f .last_commit ]      && LAST_COMMIT=$(cat .last_commit)   || LAST_COMMIT=""
+
+          # A missing .last_commit means tracking was never seeded. Treat it as
+          # "already at the current commit" so the absence of the file alone does
+          # NOT misfire a pre-release; the bootstrap job below creates it.
+          if [ -f .last_commit ]; then
+            LAST_COMMIT=$(cat .last_commit)
+            BOOTSTRAP=false
+          else
+            LAST_COMMIT="$COMMIT"
+            BOOTSTRAP=true
+            echo "No .last_commit found — bootstrapping tracking to current commit."
+          fi
           echo "Last processed tag:    $LAST_TAG"
           echo "Last processed commit: $LAST_COMMIT"
 
@@ -116,6 +128,7 @@ jobs:
             echo "tag=$TAG"
             echo "commit=$COMMIT"
             echo "short=$SHORT"
+            echo "bootstrap=$BOOTSTRAP"
           } >> "$GITHUB_OUTPUT"
 
           # Dynamic build/release matrices: full set for releases, trimmed for pre-releases.
@@ -237,7 +250,12 @@ jobs:
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
           echo "$SIGN_KEY" | base64 -d > key-build
 
-          WORK=$(pwd)
+          # Build a proper opkg feed index (Packages, Packages.gz, and a usign
+          # signature when a key is configured) via the SDK's own target. Running
+          # it through make sets up the host PATH/mkhash, so hashing works — a
+          # manual ipkg-make-index.sh call fails with "sha256: command not found".
+          make package/index V=s
+
           PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
           if [ -z "$PKG_DIR" ]; then
             echo "::error::Built package directory not found."
@@ -245,21 +263,6 @@ jobs:
             exit 1
           fi
           echo "Package dir: $PKG_DIR"
-
-          # Generate an opkg feed index next to the .ipk files (served as-is on gh-pages)
-          (
-            cd "$PKG_DIR"
-            "$WORK/scripts/ipkg-make-index.sh" . > Packages.manifest
-            grep -vE '^(Maintainer|LicenseFiles|Source|SourceName|Require|SourceDateEpoch):' Packages.manifest > Packages || cp Packages.manifest Packages
-            rm -f Packages.manifest
-            gzip -9nc Packages > Packages.gz
-            if [ -s "$WORK/key-build" ] && [ -x "$WORK/staging_dir/host/bin/usign" ]; then
-              "$WORK/staging_dir/host/bin/usign" -S -m Packages -s "$WORK/key-build" || echo "usign signing skipped"
-            fi
-            if [ -x "$WORK/scripts/make-index-json.py" ]; then
-              "$WORK/scripts/make-index-json.py" -f opkg -a "$ARCH" Packages > index.json || echo "index.json generation skipped"
-            fi
-          )
 
           tar -C "$PKG_DIR" -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar \
             --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
@@ -389,7 +392,9 @@ jobs:
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
 
-          WORK=$(pwd)
+          # Build the apk feed index via the SDK's own target (sets up host PATH/tools).
+          make package/index V=s
+
           PKG_DIR=$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)
           if [ -z "$PKG_DIR" ] || ! compgen -G "$PKG_DIR/*.apk" > /dev/null; then
             echo "::error::No APK files found for $ARCH"
@@ -397,16 +402,6 @@ jobs:
             exit 1
           fi
           echo "Package dir: $PKG_DIR"
-
-          # Generate an apk feed index next to the .apk files (served as-is on gh-pages)
-          (
-            cd "$PKG_DIR"
-            "$WORK/staging_dir/host/bin/apk" mkndx --allow-untrusted --output packages.adb *.apk || echo "apk mkndx skipped"
-            if [ -f packages.adb ] && [ -x "$WORK/scripts/make-index-json.py" ]; then
-              "$WORK/staging_dir/host/bin/apk" adbdump --format json packages.adb \
-                | "$WORK/scripts/make-index-json.py" -f apk -a "$ARCH" - > index.json || echo "index.json generation skipped"
-            fi
-          )
 
           tar -C "$PKG_DIR" -cvf $GITHUB_WORKSPACE/apk-$BRANCH-$ARCH.tar \
             --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
@@ -629,4 +624,33 @@ jobs:
           fi
           git add .last_commit .last_release_tag
           git commit -m "Track upstream $TAG @ $SHORT [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
+
+  # 7. Bootstrap: when tracking files are missing and there is nothing to build,
+  #    create them so the next run decides correctly (a build path is handled by
+  #    finalize instead). This is what makes a missing .last_commit self-heal.
+  bootstrap:
+    needs: check
+    if: ${{ needs.check.outputs.mode == 'SKIP' && needs.check.outputs.bootstrap == 'true' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Seed missing tracking files
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          [ -f .last_commit ]      || echo "$COMMIT" > .last_commit
+          [ -f .last_release_tag ] || echo "$TAG"    > .last_release_tag
+          git add .last_commit .last_release_tag
+          git commit -m "Seed tracking files (last_commit=$COMMIT) [skip ci]" || echo "Nothing to seed"
           git push origin HEAD:${{ github.ref_name }}
