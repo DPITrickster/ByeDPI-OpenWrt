@@ -25,10 +25,13 @@ jobs:
 
       - name: Run actionlint
         run: |
-          # actionlint auto-discovers .github/workflows/*.yml and uses shellcheck
-          # (in PATH) to lint inline run: scripts.
+          # actionlint auto-discovers .github/workflows/*.yml and runs shellcheck
+          # on inline run: scripts. Keep actionlint's own (YAML/expression/action)
+          # checks strict, but only let shellcheck FAIL the build on error-level
+          # issues — the intentional OpenWrt shell idioms here (word-splitting in
+          # `-j$(nproc)`, tar --transform, etc.) are info/style/warning noise.
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+          ./actionlint -color -shellcheck="shellcheck --severity=error"
 
       - name: Shellcheck standalone scripts
         run: |
