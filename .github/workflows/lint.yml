@@ -25,10 +25,8 @@ jobs:
 
       - name: Run actionlint
         run: |
-          # actionlint auto-discovers .github/workflows/*.yml and uses shellcheck
-          # (in PATH) to lint inline run: scripts.
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+          ./actionlint -color -shellcheck="shellcheck --severity=error"
 
       - name: Shellcheck standalone scripts
         run: |
