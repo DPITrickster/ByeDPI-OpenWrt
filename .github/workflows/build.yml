@@ -103,7 +103,8 @@ jobs:
           - branch: openwrt-24.10
             arch: aarch64_cortex-a76
     container:
-      image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      # a73 has no OpenWrt SDK image; use generic SDK (same ARM64 ISA)
+      image: openwrt/sdk:${{ matrix.arch == 'aarch64_cortex-a73' && 'aarch64_generic' || matrix.arch }}-${{ matrix.branch }}
       options: --user root
     defaults: { run: { shell: bash } }
     env:
@@ -219,7 +220,8 @@ jobs:
           - arch: arm_cortex-a9_vfpv3-d16
           - arch: mips_4kec
     container:
-      image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      # a73 has no OpenWrt SDK image; use generic SDK (same ARM64 ISA)
+      image: ghcr.io/openwrt/sdk:${{ matrix.arch == 'aarch64_cortex-a73' && 'aarch64_generic' || matrix.arch }}-${{ matrix.branch }}
       options: --user root
     defaults:
       run:
