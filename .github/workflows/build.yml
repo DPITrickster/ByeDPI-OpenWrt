@@ -150,6 +150,8 @@ jobs:
     needs: check
     if: ${{ needs.check.outputs.mode == 'release' }}
     runs-on: ubuntu-latest
+    env:
+      SDK_USER: ${{ matrix.branch == 'openwrt-19.07' && 'build' || 'buildbot' }}
     strategy:
       fail-fast: false
       matrix:
@@ -191,6 +193,7 @@ jobs:
           - { branch: openwrt-24.10, arch: aarch64_cortex-a76 }
     container:
       image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      options: --user 0
     defaults:
       run:
         working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
@@ -204,11 +207,13 @@ jobs:
           BRANCH: ${{ matrix.branch }}
           FILE_HOST: https://downloads.openwrt.org
         run: |
+          runuser -u "$SDK_USER" -- bash -eo pipefail <<'SCRIPT'
           case "$BRANCH" in
             openwrt-23.05) release=23.05.6 ;;
             openwrt-24.10) release=24.10.8 ;;
           esac
           VERSION_PATH="releases/$release" ./setup.sh
+          SCRIPT
 
       - name: Prepare package
         env:
@@ -216,6 +221,7 @@ jobs:
           SOURCE_REF: ${{ needs.check.outputs.source_ref }}
           SOURCE_DIR: ${{ needs.check.outputs.source_dir }}
         run: |
+          runuser -u "$SDK_USER" -- bash -eo pipefail <<'SCRIPT'
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           mkdir -p package/byedpi
           cp -r "$GITHUB_WORKSPACE/byedpi/." package/byedpi/
@@ -223,11 +229,14 @@ jobs:
           sed -i "s/@SOURCE_REF@/$SOURCE_REF/g" package/byedpi/Makefile
           sed -i "s/@SOURCE_DIR@/$SOURCE_DIR/g" package/byedpi/Makefile
           cat package/byedpi/Makefile
+          SCRIPT
 
       - name: Compile package
         run: |
+          runuser -u "$SDK_USER" -- bash -eo pipefail <<'SCRIPT'
           make defconfig
           make package/byedpi/compile V=s -j$(nproc)
+          SCRIPT
 
       - name: Prepare artifacts
         env:
@@ -252,6 +261,8 @@ jobs:
     needs: check
     if: ${{ needs.check.outputs.mode != 'SKIP' }}
     runs-on: ubuntu-latest
+    env:
+      SDK_USER: buildbot
     strategy:
       fail-fast: false
       matrix:
@@ -289,6 +300,7 @@ jobs:
           - { arch: mips_4kec }
     container:
       image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      options: --user 0
     defaults:
       run:
         working-directory: /builder
@@ -299,7 +311,7 @@ jobs:
       - name: Setup SDK
         env:
           FILE_HOST: https://downloads.openwrt.org
-        run: VERSION_PATH=releases/25.12.6 ./setup.sh
+        run: runuser -u "$SDK_USER" -- env VERSION_PATH=releases/25.12.6 ./setup.sh
 
       - name: Prepare package
         env:
@@ -307,6 +319,7 @@ jobs:
           SOURCE_REF: ${{ needs.check.outputs.source_ref }}
           SOURCE_DIR: ${{ needs.check.outputs.source_dir }}
         run: |
+          runuser -u "$SDK_USER" -- bash -eo pipefail <<'SCRIPT'
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           mkdir -p package/byedpi
           cp -r "$GITHUB_WORKSPACE/byedpi/." package/byedpi/
@@ -314,11 +327,14 @@ jobs:
           sed -i "s/@SOURCE_REF@/$SOURCE_REF/g" package/byedpi/Makefile
           sed -i "s/@SOURCE_DIR@/$SOURCE_DIR/g" package/byedpi/Makefile
           cat package/byedpi/Makefile
+          SCRIPT
 
       - name: Compile package
         run: |
+          runuser -u "$SDK_USER" -- bash -eo pipefail <<'SCRIPT'
           make defconfig
           make package/byedpi/compile V=s -j$(nproc)
+          SCRIPT
 
       - name: Prepare artifacts
         env:
