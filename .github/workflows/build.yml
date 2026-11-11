@@ -1,66 +1,159 @@
-permissions:
-  contents: write
-
 name: build
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force a build even if nothing changed upstream (rebuilds current release)'
+        type: boolean
+        default: false
+      ref:
+        description: 'Build an arbitrary upstream ref (commit sha or tag) as a pre-release'
+        type: string
+        default: ''
   schedule:
     - cron: '0 0 */14 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # 1. Check upstream
+  # 1. Check upstream: decide build mode (release / prerelease / skip)
   check:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.get_tag.outputs.tag }}
+      mode:            ${{ steps.decide.outputs.mode }}
+      tag:             ${{ steps.decide.outputs.tag }}
+      tag_suffix:      ${{ steps.decide.outputs.tag_suffix }}
+      version:         ${{ steps.decide.outputs.version }}
+      source_ref:      ${{ steps.decide.outputs.source_ref }}
+      source_dir:      ${{ steps.decide.outputs.source_dir }}
+      prerelease:      ${{ steps.decide.outputs.prerelease }}
+      commit:          ${{ steps.decide.outputs.commit }}
+      short:           ${{ steps.decide.outputs.short }}
+      bootstrap:       ${{ steps.decide.outputs.bootstrap }}
+      ipk_branches:    ${{ steps.decide.outputs.ipk_branches }}
+      apk_branches:    ${{ steps.decide.outputs.apk_branches }}
+      release_targets: ${{ steps.decide.outputs.release_targets }}
     steps:
-      - name: Checkout repository (to read .last_release_tag)
+      - name: Checkout repository (to read tracking files)
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Get upstream latest release tag
-        id: get_tag
+      - name: Decide build mode
+        id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: 'hufrea/byedpi'
+          FORCE: ${{ github.event.inputs.force }}
+          REF_IN: ${{ github.event.inputs.ref }}
         run: |
-          TAG=$(wget -qO- --header="Authorization: token $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
-          echo "Latest upstream tag: $TAG"
+          api() {
+            local out
+            for _ in 1 2 3; do
+              out=$(wget -qO- --header="Authorization: token $GH_TOKEN" "$1") && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+              sleep 3
+            done
+            return 1
+          }
 
-          if [ -f .last_release_tag ]; then
-            LAST=$(cat .last_release_tag)
+          TAG=$(api "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K.+?(?=")')
+          DEFAULT_BRANCH=$(api "https://api.github.com/repos/$REPO" | grep -Po '"default_branch": "\K.+?(?=")')
+          COMMIT=$(api "https://api.github.com/repos/$REPO/commits/$DEFAULT_BRANCH" | grep -Po '"sha": "\K[0-9a-f]+' | head -1)
+          SHORT=${COMMIT:0:7}
+          echo "Upstream latest release tag: $TAG"
+          echo "Upstream default branch '$DEFAULT_BRANCH' HEAD: $COMMIT"
+
+          if [ -z "$TAG" ] || [ -z "$COMMIT" ]; then
+            echo "::error::Could not query upstream tag/commit from GitHub API."
+            exit 1
+          fi
+
+          [ -f .last_release_tag ] && LAST_TAG=$(cat .last_release_tag) || LAST_TAG=""
+
+          if [ -f .last_commit ]; then
+            LAST_COMMIT=$(cat .last_commit)
+            BOOTSTRAP=false
           else
-            LAST=""
+            LAST_COMMIT="$COMMIT"
+            BOOTSTRAP=true
+            echo "No .last_commit found — bootstrapping tracking to current commit."
           fi
-          echo "Last processed tag: $LAST"
+          echo "Last processed tag:    $LAST_TAG"
+          echo "Last processed commit: $LAST_COMMIT"
 
-          if [ "$TAG" = "$LAST" ]; then
-            echo "tag=SKIP" >> $GITHUB_OUTPUT
-            echo "No new release. Skipping build."
-            exit 0
+          MODE=SKIP PRERELEASE=false TAG_SUFFIX="" VERSION="${TAG#v}"
+          SOURCE_REF="$TAG" SOURCE_DIR="${TAG#v}"
+
+          if [ -n "$REF_IN" ]; then
+            echo "==> Manual ref requested: pre-release build from '$REF_IN'."
+            MODE=prerelease PRERELEASE=true
+            SOURCE_REF="$REF_IN" SOURCE_DIR="${REF_IN#v}"
+            SHORT="${REF_IN:0:7}" TAG_SUFFIX="-pre-${REF_IN:0:7}"
+          elif [ "$TAG" != "$LAST_TAG" ]; then
+            echo "==> New upstream release: full release build."
+            MODE=release
+          elif [ "$COMMIT" != "$LAST_COMMIT" ]; then
+            echo "==> Same version, new upstream commit: pre-release build from $SHORT."
+            MODE=prerelease PRERELEASE=true
+            SOURCE_REF="$COMMIT" SOURCE_DIR="$COMMIT" TAG_SUFFIX="-pre-$SHORT"
+          elif [ "$FORCE" = "true" ]; then
+            echo "==> Nothing changed but force requested: rebuilding current release."
+            MODE=release
+          else
+            echo "==> Nothing changed: skipping build."
           fi
 
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          {
+            echo "mode=$MODE"
+            echo "prerelease=$PRERELEASE"
+            echo "tag_suffix=$TAG_SUFFIX"
+            echo "version=$VERSION"
+            echo "source_ref=$SOURCE_REF"
+            echo "source_dir=$SOURCE_DIR"
+            echo "tag=$TAG"
+            echo "commit=$COMMIT"
+            echo "short=$SHORT"
+            echo "bootstrap=$BOOTSTRAP"
+          } >> "$GITHUB_OUTPUT"
 
-  # 2. IPK build
+          if [ "$MODE" = "release" ]; then
+            {
+              echo 'ipk_branches=["openwrt-19.07","openwrt-21.02","openwrt-22.03","openwrt-23.05","openwrt-24.10"]'
+              echo 'apk_branches=["openwrt-25.12"]'
+              echo 'release_targets=[{"branch":"19.07","format":"ipk"},{"branch":"21.02","format":"ipk"},{"branch":"22.03","format":"ipk"},{"branch":"23.05","format":"ipk"},{"branch":"24.10","format":"ipk"},{"branch":"25.12","format":"apk"}]'
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$MODE" = "prerelease" ]; then
+            {
+              echo 'ipk_branches=[]'
+              echo 'apk_branches=["openwrt-25.12"]'
+              echo 'release_targets=[{"branch":"25.12","format":"apk"}]'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'ipk_branches=[]'
+              echo 'apk_branches=[]'
+              echo 'release_targets=[]'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+  # SDK BUILDS (.ipk for OpenWrt <= 24.10)
   build-ipk:
     needs: check
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    if: ${{ needs.check.outputs.mode == 'release' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - openwrt-19.07
-          - openwrt-21.02
-          - openwrt-22.03
-          - openwrt-23.05
-          - openwrt-24.10
+        branch: ${{ fromJSON(needs.check.outputs.ipk_branches) }}
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
@@ -89,104 +182,80 @@ jobs:
           - mipsel_mips32
           - x86_64
         exclude:
-          - branch: openwrt-19.07
-            arch: arm_cortex-a7
-          - branch: openwrt-19.07
-            arch: arm_cortex-a7_vfpv4
-          - branch: openwrt-19.07
-            arch: mips_4kec
-          - branch: openwrt-21.02
-            arch: arm_cortex-a7_vfpv4
-          - branch: openwrt-24.10
-            arch: arm_mpcore
+          - { branch: openwrt-19.07, arch: arm_cortex-a7 }
+          - { branch: openwrt-19.07, arch: arm_cortex-a7_vfpv4 }
+          - { branch: openwrt-19.07, arch: mips_4kec }
+          - { branch: openwrt-21.02, arch: arm_cortex-a7_vfpv4 }
+          - { branch: openwrt-24.10, arch: arm_mpcore }
         include:
-          - branch: openwrt-24.10
-            arch: aarch64_cortex-a76
+          - { branch: openwrt-24.10, arch: aarch64_cortex-a76 }
     container:
       image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
-      options: --user root
-    defaults: { run: { shell: bash } }
-    env:
-      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup SDK
         if: ${{ matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' }}
-        working-directory: /builder
         env:
           BRANCH: ${{ matrix.branch }}
+          FILE_HOST: https://downloads.openwrt.org
         run: |
-          # Override VERSION_PATH for branches where SNAPSHOT URL is dead
-          if [ "$BRANCH" = "openwrt-23.05" ]; then
-            VERSION_PATH=releases/23.05.6 HOME=/builder ./setup.sh
-          else
-            HOME=/builder ./setup.sh
-          fi
+          case "$BRANCH" in
+            openwrt-23.05) release=23.05.6 ;;
+            openwrt-24.10) release=24.10.8 ;;
+          esac
+          VERSION_PATH="releases/$release" ./setup.sh
 
-
-      - name: Prepare package (set version)
+      - name: Prepare package
+        env:
+          VERSION:    ${{ needs.check.outputs.version }}
+          SOURCE_REF: ${{ needs.check.outputs.source_ref }}
+          SOURCE_DIR: ${{ needs.check.outputs.source_dir }}
         run: |
-          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p package/byedpi
+          cp -r "$GITHUB_WORKSPACE/byedpi/." package/byedpi/
+          sed -i "s/@VERSION@/$VERSION/g" package/byedpi/Makefile
+          sed -i "s/@SOURCE_REF@/$SOURCE_REF/g" package/byedpi/Makefile
+          sed -i "s/@SOURCE_DIR@/$SOURCE_DIR/g" package/byedpi/Makefile
+          cat package/byedpi/Makefile
 
       - name: Compile package
-        id: compile
-        working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
-        env:
-          ARCH: ${{ matrix.arch }}
-          BRANCH: ${{ matrix.branch }}
-          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
-          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
-          ./scripts/feeds update byedpi
-          ./scripts/feeds install -a -p byedpi
           make defconfig
-          make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
-          echo "$SIGN_KEY" | base64 -d > key-build
-          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar \
-            --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+          make package/byedpi/compile V=s -j$(nproc)
 
-      - name: Compress build logs
-        if: ${{ always() }}
+      - name: Prepare artifacts
         env:
-          ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
-          LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          if [ -d "$LOGS_DIR" ]; then
-            tar -cJvf logs-ipk-$BRANCH-$ARCH.tar.xz "$LOGS_DIR"
-          else
-            echo "No logs dir at $LOGS_DIR — skipping compression."
-          fi
+          mkdir -p ./ipk-out
+          find bin/packages/ -type f -name 'byedpi*.ipk' -exec cp {} ./ipk-out/ \;
+          test -n "$(find ./ipk-out -name 'byedpi*.ipk' -print -quit)"
 
-      - name: Upload packages
-        if: ${{ steps.compile.outcome == 'success' }}
+          tar -cvf "$GITHUB_WORKSPACE/ipk-${BRANCH}-${ARCH}.tar" -C ./ipk-out .
+
+      - name: Upload IPK artifacts
         uses: actions/upload-artifact@v6
         with:
           name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
           path: ipk-${{ matrix.branch }}-${{ matrix.arch }}.tar
           if-no-files-found: error
 
-      - name: Upload build logs
-        uses: actions/upload-artifact@v6
-        with:
-          name: logs-ipk-${{ matrix.branch }}-${{ matrix.arch }}
-          path: logs-ipk-*.tar.xz
-          if-no-files-found: ignore
-
-  # 3. APK build
+  # SDK BUILDS (.apk for OpenWrt >= 25.12)
   build-apk:
     needs: check
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    if: ${{ needs.check.outputs.mode != 'SKIP' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - openwrt-25.12
-          # for new branch add line:
-          # - openwrt-26.01
+        branch: ${{ fromJSON(needs.check.outputs.apk_branches) }}
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
@@ -216,101 +285,224 @@ jobs:
           - riscv64_generic
           - x86_64
         exclude:
-          - arch: arm_cortex-a9_vfpv3-d16
-          - arch: mips_4kec
+          - { arch: arm_cortex-a9_vfpv3-d16 }
+          - { arch: mips_4kec }
     container:
       image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
-      options: --user root
     defaults:
       run:
-        shell: bash
-    env:
-      UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+        working-directory: /builder
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Fix SDK paths
-        run: |
-          mkdir -p /builder/shared-workdir
-          rm -rf /builder/shared-workdir/build
-          ln -sf /builder /builder/shared-workdir/build
+      - name: Setup SDK
+        env:
+          FILE_HOST: https://downloads.openwrt.org
+        run: VERSION_PATH=releases/25.12.6 ./setup.sh
 
-      - name: Setup OpenWrt SDK
-        working-directory: /builder
+      - name: Prepare package
+        env:
+          VERSION:    ${{ needs.check.outputs.version }}
+          SOURCE_REF: ${{ needs.check.outputs.source_ref }}
+          SOURCE_DIR: ${{ needs.check.outputs.source_dir }}
         run: |
-          wget -qO- 'https://raw.githubusercontent.com/openwrt/keyring/refs/heads/master/gpg/0x1D53D1877742E911.asc' | gpg --verbose --import
-          sed -i 's/gpg --/#gpg --/g' setup.sh
-          sed -r -i 's/^rm.+//' setup.sh
-          ./setup.sh
-
-      - name: Prepare package (set version)
-        run: |
-          sed "s|@VERSION@|${UPSTREAM_TAG#v}|" -i byedpi/Makefile
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p package/byedpi
+          cp -r "$GITHUB_WORKSPACE/byedpi/." package/byedpi/
+          sed -i "s/@VERSION@/$VERSION/g" package/byedpi/Makefile
+          sed -i "s/@SOURCE_REF@/$SOURCE_REF/g" package/byedpi/Makefile
+          sed -i "s/@SOURCE_DIR@/$SOURCE_DIR/g" package/byedpi/Makefile
+          cat package/byedpi/Makefile
 
       - name: Compile package
-        id: compile
-        working-directory: /builder
-        env:
-          ARCH: ${{ matrix.arch }}
-          BRANCH: ${{ matrix.branch }}
-          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
-          echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
-          ./scripts/feeds update byedpi
-          ./scripts/feeds install -a -p byedpi
           make defconfig
-          sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config 2>/dev/null || true
-          sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config 2>/dev/null || true
-          make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
+          make package/byedpi/compile V=s -j$(nproc)
 
-          if [ -n "$SIGN_KEY" ]; then
-            echo "$SIGN_KEY" | base64 -d > key-build
-          fi
-
-          mkdir -p /tmp/apk-collection
-          find ./bin -name "byedpi*.apk" -type f -exec cp {} /tmp/apk-collection/ \;
-
-          if [ -z "$(ls -A /tmp/apk-collection)" ]; then
-            echo "ERROR: No APK files found for $ARCH"
-            find ./bin -type f -name "*.apk" | head -5
-            exit 1
-          fi
-
-          tar -C /tmp/apk-collection -cvf $GITHUB_WORKSPACE/apk-$BRANCH-$ARCH.tar \
-            --transform "s|^|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
-
-      - name: Compress build logs
-        if: always()
+      - name: Prepare artifacts
         env:
-          ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          if [ -d "/builder/logs" ]; then
-            tar -cJvf logs-apk-$BRANCH-$ARCH.tar.xz /builder/logs
-          else
-            echo "No logs dir at /builder/logs — skipping compression."
-          fi
+          mkdir -p ./apk-out
+          find bin/packages/ -type f -name 'byedpi*.apk' | while read -r pkg; do
+            rel=${pkg#bin/packages/}
+            arch=${rel%%/*}
+            mkdir -p "./apk-out/$arch"
+            cp "$pkg" "./apk-out/$arch/"
+          done
+          test -n "$(find ./apk-out -name 'byedpi*.apk' -print -quit)"
 
-      - name: Upload APK packages
-        if: steps.compile.outcome == 'success'
+          tar -cvf "$GITHUB_WORKSPACE/apk-${BRANCH}-${ARCH}.tar" -C ./apk-out .
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v6
         with:
           name: apk-${{ matrix.branch }}-${{ matrix.arch }}
           path: apk-${{ matrix.branch }}-${{ matrix.arch }}.tar
           if-no-files-found: error
 
-      - name: Upload build logs
+  # GENERIC BUILDS (Packaging pre-built binaries without SDK)
+  prepare-generic-tools:
+    needs: check
+    if: ${{ needs.check.outputs.mode == 'release' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq
+          sudo -E apt-get install -y build-essential meson ninja-build libssl-dev zlib1g-dev pkg-config git
+
+      - name: Fetch and compile standalone apk-tools
+        run: |
+          git clone --depth 1 --branch v3.0.9 https://gitlab.alpinelinux.org/alpine/apk-tools.git apk-tools-src
+          pushd apk-tools-src
+          meson setup build \
+            -Ddefault_library=static \
+            -Dlua=disabled \
+            -Ddocs=disabled \
+            -Dzstd=false \
+            -Dpython=disabled \
+            -Dtests=disabled \
+            -Dcrypto_backend=openssl
+          ninja -C build
+          popd
+
+          mkdir -p tools-out
+          APK_BIN=$(find apk-tools-src/build -name apk -type f -executable | head -1)
+          if [ -z "$APK_BIN" ]; then
+            echo "::error::apk binary not found after build."
+            exit 1
+          fi
+          install -m755 "$APK_BIN" tools-out/apk
+          curl -fsSL "https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build" -o tools-out/ipkg-build
+          chmod +x tools-out/ipkg-build
+
+      - name: Upload packaging tools
         uses: actions/upload-artifact@v6
         with:
-          name: logs-apk-${{ matrix.branch }}-${{ matrix.arch }}
-          path: logs-apk-*.tar.xz
-          if-no-files-found: ignore
+          name: byedpi-generic-tools
+          path: tools-out/
+          if-no-files-found: error
 
-  # 4. Deploy to GitHub Pages
+  build-generic:
+    needs: [check, prepare-generic-tools]
+    if: ${{ needs.check.outputs.mode == 'release' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - hufrea_arch: aarch64
+            openwrt_arches: aarch64_cortex-a53 aarch64_cortex-a72 aarch64_cortex-a76 aarch64_generic
+          - hufrea_arch: armv7l
+            openwrt_arches: arm_cortex-a5_vfpv4 arm_cortex-a7 arm_cortex-a7_neon-vfpv4 arm_cortex-a7_vfpv4 arm_cortex-a8_vfpv3 arm_cortex-a9 arm_cortex-a9_neon arm_cortex-a9_vfpv3-d16 arm_cortex-a15_neon-vfpv4 arm_fa526 arm_mpcore arm_xscale
+          - hufrea_arch: armv6
+            openwrt_arches: arm_arm1176jzf-s_vfp arm_arm926ej-s
+          - hufrea_arch: mips
+            openwrt_arches: mips64_octeonplus mips_24kc mips_4kec mips_mips32
+          - hufrea_arch: mipsel
+            openwrt_arches: mipsel_24kc mipsel_24kc_24kf mipsel_74kc mipsel_mips32
+          - hufrea_arch: x86_64
+            openwrt_arches: x86_64
+          - hufrea_arch: i686
+            openwrt_arches: i386_pentium4
+          - hufrea_arch: powerpc
+            openwrt_arches: powerpc_464fp powerpc_8540
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download prebuilt packaging tools
+        uses: actions/download-artifact@v6
+        with:
+          name: byedpi-generic-tools
+          path: tools
+
+      - name: Install packaging tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq
+          sudo -E apt-get install -y fakeroot
+          sudo install -m755 tools/apk /usr/local/bin/apk
+          sudo install -m755 tools/ipkg-build /usr/local/bin/ipkg-build
+
+      - name: Download upstream binary
+        id: download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check.outputs.tag }}
+          SOURCE_REF: ${{ needs.check.outputs.source_ref }}
+          MODE: ${{ needs.check.outputs.mode }}
+          HUFREA_ARCH: ${{ matrix.hufrea_arch }}
+        run: |
+          api() {
+            local out
+            for _ in 1 2 3; do
+              out=$(wget -qO- --header="Authorization: token $GH_TOKEN" "$1") && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+              sleep 3
+            done
+            return 1
+          }
+
+          api "https://api.github.com/repos/hufrea/byedpi/releases/tags/${TAG}" > release.json
+          url=$(grep -oP "\"browser_download_url\": \"\K[^\"]*${HUFREA_ARCH}\.tar\.gz(?=\")" release.json | head -1)
+
+          if [ -z "$url" ]; then
+            echo "::warning::No upstream release asset for arch '$HUFREA_ARCH' in $TAG — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Found URL: $url"
+          for _ in 1 2 3; do
+            wget -q "$url" -O binary.tar.gz && break
+            sleep 3
+          done
+          tar xzf binary.tar.gz
+          BINARY=$(find . -name 'ciadpi*' -type f | head -1)
+
+          if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
+            echo "::error::ciadpi binary not found in archive for $HUFREA_ARCH"
+            exit 1
+          fi
+          chmod +x "$BINARY"
+          mv "$BINARY" ./ciadpi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Setup APK signing key
+        if: ${{ steps.download.outputs.skip == 'false' }}
+        run: |
+          if [ -n "${{ secrets.SIGN_PRIVATE_KEY }}" ]; then
+            echo "${{ secrets.SIGN_PRIVATE_KEY }}" > /tmp/sign.key
+            chmod 600 /tmp/sign.key
+            echo "APK_SIGN_KEY=/tmp/sign.key" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build packages
+        if: ${{ steps.download.outputs.skip == 'false' }}
+        run: |
+          bash .github/build-byedpi.sh \
+            "${{ needs.check.outputs.version }}" \
+            "./ciadpi" \
+            "${{ matrix.openwrt_arches }}"
+
+      - name: Upload artifacts
+        if: ${{ steps.download.outputs.skip == 'false' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: generic-packages-${{ matrix.hufrea_arch }}
+          path: .github/out/
+          if-no-files-found: error
+
+  # PUBLISH PACKAGES AS STATIC DOWNLOADS
   gh-pages:
-    needs: [check, build-ipk, build-apk]
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+    needs: [check, build-ipk, build-apk, build-generic]
+    if: ${{ needs.check.outputs.mode == 'release' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -318,26 +510,38 @@ jobs:
       - name: Download IPK artifacts
         uses: actions/download-artifact@v6
         with:
-          pattern: ipk-*
+          pattern: ipk-openwrt-*
           path: ./artifacts
 
       - name: Download APK artifacts
         uses: actions/download-artifact@v6
         with:
-          pattern: apk-*
+          pattern: apk-openwrt-*
           path: ./artifacts
 
-      - name: Prepare files
-        run: |
-          mkdir -p public
-          find ./artifacts -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
-          find ./artifacts -name 'apk-*.tar' -exec tar -C ./public -xvf {} \;
-          cat <<EOF >> public/public.key
-          untrusted comment: ByeDPI OpenWrt repo
-          RWRT/Cfg5ReIbqWME8QTUQ1FKxp8FTr9M9g1vDsL8uIdRyP5TTNAk4QA
-          EOF
+      - name: Download generic packages
+        uses: actions/download-artifact@v6
+        with:
+          pattern: generic-packages-*
+          path: ./generic-artifacts
+          merge-multiple: true
 
-      - name: Deploy to GH pages
+      - name: Prepare static downloads
+        run: |
+          mkdir -p public/25.12 public/generic
+          for branch in 19.07 21.02 22.03 23.05 24.10; do
+            find ./artifacts -name "ipk-openwrt-${branch}-*.tar" | while read -r archive; do
+              arch=${archive##*/}
+              arch=${arch#ipk-openwrt-${branch}-}
+              arch=${arch%.tar}
+              mkdir -p "public/$branch/$arch"
+              tar -xf "$archive" -C "public/$branch/$arch"
+            done
+          done
+          find ./artifacts -name 'apk-openwrt-25.12-*.tar' -exec tar -xf {} -C public/25.12 \;
+          cp ./generic-artifacts/*.{ipk,apk} public/generic/
+
+      - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -347,44 +551,21 @@ jobs:
           force_orphan: true
           publish_dir: ./public
 
-      - name: Checkout repo to update last tag
-        if: ${{ success() }}
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Update .last_release_tag
-        if: ${{ success() }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "${{ needs.check.outputs.tag }}" > .last_release_tag
-          git add .last_release_tag
-          git commit -m "Update last_release_tag to ${{ needs.check.outputs.tag }} [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:${{ github.ref_name }}
-
-  # 5. Release
-  release:
-    needs: [check, build-ipk, build-apk, gh-pages]
-    if: ${{ needs.check.outputs.tag != 'SKIP' }}
+  # RELEASE SDK PACKAGES
+  release-sdk:
+    needs: [check, build-ipk, build-apk]
+    if: >-
+      ${{ always()
+          && needs.build-apk.result == 'success'
+          && (needs.build-ipk.result == 'success'
+              || (needs.check.outputs.mode == 'prerelease' && needs.build-ipk.result == 'skipped')) }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
     strategy:
       max-parallel: 1
       matrix:
-        # Each entry is a separate release.
-        # format: ipk  -> OpenWrt <= 24.10
-        # format: apk  -> OpenWrt >= 25.12
-        include:
-          - { branch: '19.07', format: ipk }
-          - { branch: '21.02', format: ipk }
-          - { branch: '22.03', format: ipk }
-          - { branch: '23.05', format: ipk }
-          - { branch: '24.10', format: ipk }
-          - { branch: '25.12', format: apk }
-          # - { branch: '26.01', format: apk }
+        include: ${{ fromJSON(needs.check.outputs.release_targets) }}
     steps:
       - name: Download IPK artifacts for OpenWrt ${{ matrix.branch }}
         if: ${{ matrix.format == 'ipk' }}
@@ -392,7 +573,6 @@ jobs:
         with:
           pattern: ipk-openwrt-${{ matrix.branch }}-*
           path: ./artifacts
-          merge-multiple: false
 
       - name: Download APK artifacts for OpenWrt ${{ matrix.branch }}
         if: ${{ matrix.format == 'apk' }}
@@ -400,7 +580,6 @@ jobs:
         with:
           pattern: apk-openwrt-${{ matrix.branch }}-*
           path: ./artifacts
-          merge-multiple: false
 
       - name: Prepare release files
         env:
@@ -409,22 +588,15 @@ jobs:
         run: |
           mkdir -p ./release_files
 
-          echo "=== Artifacts ==="
-          ls -R ./artifacts/ | head -100
-          echo "================="
-
           if [ "$FORMAT" = "ipk" ]; then
-            for tar_file in ./artifacts/ipk-openwrt-${BRANCH}-*/ipk-openwrt-${BRANCH}-*.tar; do
-              [ -f "$tar_file" ] || continue
+            find ./artifacts -name "ipk-openwrt-${BRANCH}-*.tar" | while read -r tar_file; do
               echo "Extracting IPK: $tar_file"
               tar -xvf "$tar_file" -C ./release_files
             done
-            # Flatten: move all .ipk to release_files root
             find ./release_files -mindepth 2 -name '*.ipk' -exec mv -t ./release_files {} +
             find ./release_files -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
           else
-            for tar_file in ./artifacts/apk-openwrt-${BRANCH}-*/apk-openwrt-${BRANCH}-*.tar; do
-              [ -f "$tar_file" ] || continue
+            find ./artifacts -name "apk-openwrt-${BRANCH}-*.tar" | while read -r tar_file; do
               echo "Extracting APK: $tar_file"
               tmpdir=$(mktemp -d)
               tar -xvf "$tar_file" -C "$tmpdir"
@@ -437,26 +609,35 @@ jobs:
               rm -rf "$tmpdir"
             done
           fi
-
-          echo "=== Release files for OpenWrt $BRANCH ==="
-          ls -la ./release_files/
-          echo "==========================================="
+          test -n "$(find ./release_files -type f -name "*.${FORMAT}" -print -quit)"
 
       - name: Generate release notes
+        env:
+          MODE: ${{ needs.check.outputs.mode }}
+          SHORT: ${{ needs.check.outputs.short }}
+          FORMAT: ${{ matrix.format }}
+          BRANCH: ${{ matrix.branch }}
+          TAG: ${{ needs.check.outputs.tag }}
         run: |
           {
-            echo "### ByeDPI ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}"
+            if [ "$MODE" = "prerelease" ]; then
+              echo "### 🧪 ByeDPI $TAG (pre-release) for OpenWrt $BRANCH"
+              echo ""
+              echo "> Сборка из коммита \`$SHORT\` ветки upstream. Номер версии не менялся,"
+              echo "> но код обновился — это **тестовый пред-релиз**."
+            else
+              echo "### ByeDPI $TAG for OpenWrt $BRANCH"
+            fi
             echo ""
             echo "-----"
             echo "**Check the package architecture of your device:**"
             echo '```shell'
-            if [ "${{ matrix.format }}" = "ipk" ]; then
+            if [ "$FORMAT" = "ipk" ]; then
               echo "opkg print-architecture"
-              echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
             else
               echo "apk --print-arch"
-              echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
             fi
+            echo "awk -F\' '/DISTRIB_ARCH/ {print \$2}' /etc/openwrt_release"
             echo '```'
           } > release_notes.md
 
@@ -464,8 +645,128 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
-          tag_name: ${{ needs.check.outputs.tag }}-${{ matrix.branch }}
-          name: ${{ needs.check.outputs.tag }} for OpenWrt ${{ matrix.branch }}
-          target_commitish: gh-pages
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+          tag_name: ${{ needs.check.outputs.tag }}${{ needs.check.outputs.tag_suffix }}-${{ matrix.branch }}
+          name: ${{ needs.check.outputs.tag }}${{ needs.check.outputs.tag_suffix }} for OpenWrt ${{ matrix.branch }}
+          target_commitish: main
           body_path: release_notes.md
           files: ./release_files/*
+
+  # RELEASE GENERIC PACKAGES
+  release-generic:
+    needs: [check, build-generic]
+    if: ${{ needs.check.outputs.mode == 'release' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download generic artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: generic-packages-*
+          merge-multiple: true
+          path: packages/
+
+      - name: Create Generic GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+          tag_name: ${{ needs.check.outputs.tag }}${{ needs.check.outputs.tag_suffix }}-generic
+          name: "${{ needs.check.outputs.tag }}${{ needs.check.outputs.tag_suffix }} for OpenWrt (Generic Packages)"
+          target_commitish: main
+          files: |
+            packages/*.ipk
+            packages/*.apk
+          body: |
+            ## 🚧 Generic пакеты OpenWrt (универсальные бинарники)
+
+            Универсальные пакеты OpenWrt, собранные из готовых бинарных файлов.
+
+            Нативные пакеты, собранные через OpenWrt SDK, предпочтительнее.
+            Универсальные пакеты используйте, если для вашей версии OpenWrt нет нативного пакета.
+
+            ---
+
+            ### Проверка архитектуры устройства:
+
+            **OpenWrt <= 24.10 (opkg / .ipk):**
+            ```shell
+            opkg print-architecture
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            ```
+
+            **OpenWrt >= 25.12 (apk / .apk):**
+            ```shell
+            apk --print-arch
+            awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            ```
+
+  # FINALIZE TRACKING
+  finalize:
+    needs: [check, build-ipk, build-apk, build-generic, gh-pages, release-sdk, release-generic]
+    if: >-
+      ${{ always()
+          && needs.check.outputs.mode != 'SKIP'
+          && (needs.build-ipk.result == 'success'
+              || (needs.check.outputs.mode == 'prerelease' && needs.build-ipk.result == 'skipped'))
+          && needs.build-apk.result == 'success'
+          && (needs.build-generic.result == 'success' || needs.build-generic.result == 'skipped')
+          && needs.release-sdk.result == 'success'
+          && (needs.release-generic.result == 'success' || needs.release-generic.result == 'skipped')
+          && (needs.gh-pages.result == 'success' || needs.gh-pages.result == 'skipped') }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Update tracking files
+        env:
+          MODE: ${{ needs.check.outputs.mode }}
+          TAG: ${{ needs.check.outputs.tag }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+          SHORT: ${{ needs.check.outputs.short }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "$COMMIT" > .last_commit
+          if [ "$MODE" = "release" ]; then
+            echo "$TAG" > .last_release_tag
+            echo "$TAG" > .last_generic_release_tag
+          fi
+          git add .last_commit .last_release_tag .last_generic_release_tag 2>/dev/null || git add .last_commit .last_release_tag
+          git commit -m "Track upstream $TAG @ $SHORT [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }}
+
+  # BOOTSTRAP MISSING TRACKING FILES
+  bootstrap:
+    needs: check
+    if: ${{ needs.check.outputs.mode == 'SKIP' && needs.check.outputs.bootstrap == 'true' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Seed missing tracking files
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          [ -f .last_commit ]              || echo "$COMMIT" > .last_commit
+          [ -f .last_release_tag ]         || echo "$TAG"    > .last_release_tag
+          [ -f .last_generic_release_tag ] || echo "$TAG"    > .last_generic_release_tag
+          git add .last_commit .last_release_tag .last_generic_release_tag
+          git commit -m "Seed tracking files (last_commit=$COMMIT) [skip ci]" || echo "Nothing to seed"
+          git push origin HEAD:${{ github.ref_name }}
