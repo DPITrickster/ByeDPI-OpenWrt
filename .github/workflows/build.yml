@@ -639,8 +639,7 @@ jobs:
             if [ "$MODE" = "prerelease" ]; then
               echo "### 🧪 ByeDPI $TAG (pre-release) for OpenWrt $BRANCH"
               echo ""
-              echo "> Сборка из коммита \`$SHORT\` ветки upstream. Номер версии не менялся,"
-              echo "> но код обновился — это **тестовый пред-релиз**."
+              echo "> Сборка из коммита \`$SHORT\` ветки upstream. Номер версии не менялся, но код обновился — это **тестовый пред-релиз**."
             else
               echo "### ByeDPI $TAG for OpenWrt $BRANCH"
             fi
